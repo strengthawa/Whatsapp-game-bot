@@ -50,7 +50,21 @@ phone numbers — so `roastData.js` keys off a normalized name, not
 `senderNumber`. When someone DMs `!roast me`, the bot looks up the
 WhatsApp display name cached for their number (falling back to their
 current `pushName`) and matches it against `roastData.js`'s alias
-list. If nobody added their name/spelling as an alias, they'll get the
-"no roast on file" message even if they're technically in the source
-chat — add the missing spelling to `aliases` in `roastData.js` to fix
-it.
+list.
+
+Matching in `findProfile()` tries, in order:
+1. **Exact match** — normalized candidate name equals an alias string
+   verbatim.
+2. **Token-overlap match** — if no exact hit, the candidate and every
+   alias are split into words. An alias matches if its words are all
+   present in the candidate's words, or vice versa (handles a dropped
+   middle name, extra word, or different order). If more than one
+   *different person's* alias satisfies this, it's treated as no
+   match rather than guessed — a wrong roast delivered to the wrong
+   person is worse than "no roast yet."
+
+If someone's live name shares no real overlap with anything in
+`aliases`, they still get the "no roast on file" message — check the
+console for `[roast] No profile match for number=... candidates=...`
+and add the missing spelling to `aliases` in `roastData.js` to fix it
+going forward.

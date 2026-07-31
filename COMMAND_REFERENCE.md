@@ -176,6 +176,31 @@ setting.
 
 ---
 
+### Roast Game (`!roast` / `/roast `)
+
+No lobby, no round, no live session — every request is a stateless
+lookup into `roastData.js`.
+
+**Public:**
+| Command | What it does |
+|---|---|
+| `!roast` (bare) / `!roast help` | Explainer card, never stateful |
+| `!roast me` / `!roast me again` | Nice-tier roast, variation A/B (DM only) |
+| `!roast savage` / `!roast savage again` | Savage-tier roast, variation A/B (DM only) |
+
+**Admin:**
+| Command | What it does |
+|---|---|
+| `/roast help` | Dashboard (DM only) |
+| `/roast list` | Every profile loaded, tier + variation counts |
+
+No word pool, no admin toggles for public visibility beyond the
+universal `publicVisible` setting — content is entirely hand-curated
+in `roastData.js`, restart to pick up changes. Name matching tolerates
+near-miss spelling — see RoastGame/README.md "How matching works".
+
+---
+
 ## 4. File structure
 
 ### Root — shared, game-agnostic (never import a game module from here)

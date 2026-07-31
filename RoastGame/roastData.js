@@ -338,12 +338,48 @@ const profiles = {
 //   reason: too little real material to write an honest anchor from
 //   without fabricating an event that didn't happen.
 
+// Tries an exact alias match first. If that fails, falls back to a
+// token-overlap match: splits the candidate and every alias into
+// words and checks if one is a superset/subset of the other (handles
+// a dropped middle name, an extra word, or different word order —
+// the common ways a live pushName drifts from the exact spelling
+// written into `aliases`). Only returns a fallback match if exactly
+// one PERSON's aliases qualify — if two different people's aliases
+// both overlap, that's ambiguous, so it returns no match rather than
+// guess (a wrong roast delivered to the wrong person is worse than
+// "no roast yet").
 function findProfile(candidateNames) {
     for (const raw of candidateNames) {
         const norm = normalizeName(raw)
         if (!norm) continue
-        const key = aliases[norm]
-        if (key && profiles[key]) return profiles[key]
+
+        // 1) exact match — unchanged fast path
+        const exactKey = aliases[norm]
+        if (exactKey && profiles[exactKey]) return profiles[exactKey]
+
+        // 2) token-overlap fallback
+        const candidateTokens = norm.split(' ').filter(Boolean)
+        if (candidateTokens.length === 0) continue
+
+        const matchedKeys = new Set()
+        for (const aliasStr in aliases) {
+            const aliasTokens = aliasStr.split(' ').filter(Boolean)
+            if (aliasTokens.length === 0) continue
+
+            const aliasSubsetOfCandidate = aliasTokens.every(t => candidateTokens.includes(t))
+            const candidateSubsetOfAlias = candidateTokens.every(t => aliasTokens.includes(t))
+
+            if (aliasSubsetOfCandidate || candidateSubsetOfAlias) {
+                matchedKeys.add(aliases[aliasStr])
+            }
+        }
+
+        if (matchedKeys.size === 1) {
+            const [onlyKey] = matchedKeys
+            if (profiles[onlyKey]) return profiles[onlyKey]
+        }
+        // matchedKeys.size === 0 → no overlap at all, try next candidate
+        // matchedKeys.size > 1  → ambiguous across different people, don't guess
     }
     return null
 }

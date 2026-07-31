@@ -36,14 +36,26 @@ function forceStopActiveSession(chatId, ctx) {
 // saved display names, never phone numbers, for named contacts — so
 // matching happens on name, not senderNumber. Tries, in order: the
 // bot's cached WhatsApp display name for this number, then the raw
-// pushName off the current message. First match wins.
+// pushName off the current message. First match wins. findProfile()
+// itself now tolerates near-miss spelling (see roastData.js) instead
+// of requiring an exact string match.
 function resolveProfileForSender(senderNumber, senderName, nameCache) {
     const candidates = []
     if (nameCache && senderNumber && nameCache[senderNumber]) {
         candidates.push(nameCache[senderNumber])
     }
     if (senderName) candidates.push(senderName)
-    return findProfile(candidates)
+    const found = findProfile(candidates)
+
+    if (!found) {
+        // Diagnostic only — not sent to the user. Shows the real live
+        // pushName next to what roastData.js expects, so a genuine
+        // miss (zero shared words with any alias) can be reconciled
+        // by adding a new alias line by hand.
+        console.log(`[roast] No profile match for number=${senderNumber} candidates=${JSON.stringify(candidates)}`)
+    }
+
+    return found
 }
 
 module.exports = {
