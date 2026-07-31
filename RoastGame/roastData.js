@@ -30,8 +30,11 @@
 // spacing, and the emoji/decoration people add to their own names.
 function normalizeName(name) {
     return (name || '')
-        .toLowerCase()
-        .normalize('NFKD')
+        .normalize('NFKD')                  // decompose styled/mathematical letters
+        .toLowerCase()                      // THEN lowercase — order matters: toLowerCase()
+                                             // doesn't recognize mathematical bold/italic
+                                             // "letters" as cased until they're decomposed
+                                             // to plain Latin letters first
         .replace(/[\u0300-\u036f]/g, '')   // strip accents
         .replace(/[^\w\s]/g, '')            // strip emoji/punctuation
         .replace(/\s+/g, ' ')
