@@ -1,5 +1,5 @@
 // ============================================================
-//  WordClimbGame/adminCommands.js — WCL Bot · Sky Graphics
+//  WordClimbGame/adminCommands.js — Word Climb · Sky Graphics
 //  Handles all "/wcl" commands.
 //
 //  Access tiers:
@@ -19,7 +19,7 @@
 //      project root, reachable via the fixed "/admin" prefix.
 // ============================================================
 
-const { TIERS, resolveSetting, writeSetting, nameTag } = require('../permissions')
+const { TIERS, resolveSetting, writeSetting, nameTag, hasGameAccess } = require('../permissions')
 const config = require('./config')
 const engine = require('./gameEngine')
 
@@ -31,7 +31,13 @@ async function handleAdminCommand(ctx) {
 
     // ── §5: mandatory tier gate, before anything else ────────
     const senderIsCreator = senderTier === TIERS.CREATOR
-    const isAdmin = senderIsCreator || senderTier === TIERS.ADMIN
+    // Scope gate: an admin stationed on a different game (via
+    // /admin set/clear) gets total silence here, same as any other
+    // non-permitted tier — this was previously missing entirely, which
+    // meant scoping an admin to Hangman-only did nothing to restrict
+    // their access to Word Climb. The creator always bypasses this.
+    const isScopedIn = senderIsCreator || hasGameAccess(config.GAME_KEY, settings)
+    const isAdmin = (senderIsCreator || senderTier === TIERS.ADMIN) && isScopedIn
     if (!isAdmin) return false
 
     const replyTo = senderJid
@@ -56,6 +62,9 @@ async function handleAdminCommand(ctx) {
                 `_Sky Graphics — ${config.GAME_NAME}_\n\n` +
                 `*Game Controls:*\n` +
                 `› \`${config.ADMIN_PREFIX}status\` — current session state\n` +
+                `› \`${config.ADMIN_PREFIX}begin\` — force-start the open lobby early (min *${config.MIN_PLAYERS_TO_BEGIN}* player${config.MIN_PLAYERS_TO_BEGIN === 1 ? '' : 's'})\n` +
+                `› \`${config.ADMIN_PREFIX}pause\` — freeze the turn timer\n` +
+                `› \`${config.ADMIN_PREFIX}resume\` — unfreeze the turn timer\n` +
                 `› \`${config.ADMIN_PREFIX}stop\` — end the session, post the final board\n` +
                 `› \`${config.ADMIN_PREFIX}reset\` — hard reset, wipes session silently\n\n` +
                 `*Settings:*\n` +
@@ -65,8 +74,30 @@ async function handleAdminCommand(ctx) {
                 `› Length Range: *${config.MIN_LENGTH}–${config.MAX_LENGTH} letters*\n` +
                 `› Max Strikes: *${config.MAX_STRIKES}*\n\n` +
                 `${config.DIVIDER}\n` +
-                `_${config.GAME_ACRONYM} Bot · Sky Graphics_ 🎨`
+                `_Sky Graphics — ${config.GAME_NAME}_`
         })
+        return true
+    }
+
+    // ─── /wcl begin — force-start the open lobby early ───────────
+    // Moved here from publicCommands.js: this used to be self-service
+    // for any joined player once 2+ had joined. Now admin-only, and the
+    // floor is config.MIN_PLAYERS_TO_BEGIN (currently 1, so a solo climb
+    // is allowed) instead of a hardcoded 2.
+    if (cmd === 'begin') {
+        if (!liveChat || !gameState || !gameState.lobbyActive) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ No open lobby to start early right now.` })
+            return true
+        }
+        if (gameState.players.length < config.MIN_PLAYERS_TO_BEGIN) {
+            await sendSafeMessage(sock, replyTo, {
+                text: `⚠️ Need at least *${config.MIN_PLAYERS_TO_BEGIN} player${config.MIN_PLAYERS_TO_BEGIN === 1 ? '' : 's'}* in the lobby to start.`
+            })
+            return true
+        }
+        if (gameState.lobbyTimer) clearInterval(gameState.lobbyTimer)
+        await engine.closeLobbyAndStart(liveChat, gameCtx)
+        await sendSafeMessage(sock, replyTo, { text: `🚀 *Lobby started early.* ✅` })
         return true
     }
 
@@ -94,6 +125,7 @@ async function handleAdminCommand(ctx) {
                 })
             }
         } else if (gameState.active) {
+            statusText += gameState.paused ? `⏸️ Status: *PAUSED*\n` : `▶️ Status: *LIVE*\n`
             statusText += `🧗 *CLIMB IN PROGRESS* — ${liveChat}\n`
             statusText += `📏 Current rung: *${gameState.currentLength} letters* (of ${config.MAX_LENGTH})\n`
             statusText += `👥 Climbers left: *${gameState.players.length}*\n`
@@ -104,6 +136,37 @@ async function handleAdminCommand(ctx) {
         statusText += `› Turn Timer: *${resolveSetting(`${config.GAME_KEY}_turnSeconds`, settings, config.TURN_SECONDS)}s*`
 
         await sendSafeMessage(sock, replyTo, { text: statusText })
+        return true
+    }
+
+    if (cmd === 'pause') {
+        if (!liveChat || !gameState || !gameState.active) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ No active climb to pause right now.` })
+            return true
+        }
+        const ok = engine.pauseSession(liveChat, gameCtx)
+        if (ok) {
+            persistGames()
+            await sendSafeMessage(sock, replyTo, { text: `⏸️ *Climb paused.* ✅` })
+            await sock.sendMessage(liveChat, { text: `⏸️ *Climb paused by the admin.* Sit tight — we'll be right back! ☕` })
+        } else {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ Climb is already paused or no round is in progress.` })
+        }
+        return true
+    }
+
+    if (cmd === 'resume') {
+        if (!liveChat || !gameState || !gameState.active) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ No active climb to resume right now.` })
+            return true
+        }
+        const ok = engine.resumeSession(liveChat, gameCtx)
+        if (ok) {
+            await sendSafeMessage(sock, replyTo, { text: `▶️ *Climb resumed!* ✅` })
+            await sock.sendMessage(liveChat, { text: `▶️ *Climb resumed by the admin!* Fresh timer — keep climbing! 🔥` })
+        } else {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ Climb is not currently paused.` })
+        }
         return true
     }
 
@@ -129,6 +192,7 @@ async function handleAdminCommand(ctx) {
     }
 
     if (cmd === 'reset') {
+        const hadSession = !!liveChat
         if (liveChat) {
             engine.forceStopActiveSession(liveChat, gameCtx)
             games[engine.stateKey(liveChat)] = engine.freshState()
@@ -138,11 +202,15 @@ async function handleAdminCommand(ctx) {
                 text: `🔄 *${config.GAME_NAME} Reset* ✅\n\nAny active session was ended by the admin.`
             })
         }
+        // Honest reply: "Reset Complete" used to be shown even when there
+        // was nothing live to wipe, which reads as if something happened
+        // when it didn't. Now says so plainly either way.
         await sendSafeMessage(sock, replyTo, {
-            text:
-                `🔄 *Reset Complete* ✅\n\n` +
-                `*${config.GAME_NAME}* state was wiped back to defaults for its chat. The turn-timer setting is untouched — ` +
-                `use \`${config.ADMIN_PREFIX}setturnseconds\` if you want to change that too.`
+            text: hadSession
+                ? `🔄 *Reset Complete* ✅\n\n` +
+                  `*${config.GAME_NAME}* state was wiped back to defaults for its chat. The turn-timer setting is untouched — ` +
+                  `use \`${config.ADMIN_PREFIX}setturnseconds\` if you want to change that too.`
+                : `ℹ️ *Nothing to reset.*\n\nNo active *${config.GAME_NAME}* session was found for this chat — there was nothing to wipe.`
         })
         return true
     }
@@ -160,7 +228,12 @@ async function handleAdminCommand(ctx) {
         return true
     }
 
-    // Unrecognised /wcl subcommand — silently ignored, same convention as Hangman.
+    // Unrecognised /wcl subcommand — explicit error, not silence.
+    // Standardized across all games (was silent here and in Hangman,
+    // explicit in RoastGame — now explicit everywhere).
+    await sendSafeMessage(sock, replyTo, {
+        text: `⚠️ *Unknown command.* Try \`${config.ADMIN_PREFIX}help\`.`
+    })
     return true
 }
 

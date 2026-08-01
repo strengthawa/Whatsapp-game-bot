@@ -18,6 +18,13 @@ pre-written lookup.
 Bare `!roast` in the group never reveals anything — it only tells the
 person how to get their own, privately, in DM.
 
+**This is enforced in code, not just documented.** `publicCommands.js`
+checks whether the chat is a group before any profile lookup runs — a
+`!roast me`/`savage` typed inside a group never reaches `roastData.js`
+at all; the group only ever sees a one-line redirect to DM. (Earlier
+versions of this game only made this promise in copy, without a
+matching code check — fixed.)
+
 ## Admin commands
 
 | Command | Tier | What it does |

@@ -1,5 +1,5 @@
 // ============================================================
-//  RoastGame/config.js — Sky Graphics
+//  RoastGame/config.js — Roast Game · Sky Graphics
 //  Single source of truth for this game's identity + prefixes.
 // ============================================================
 

@@ -1,5 +1,5 @@
 // ============================================================
-//  index.js — HMG Bot · Sky Graphics
+//  index.js — Game Bots · Sky Graphics
 //  Thin orchestrator: connection, sender resolution, message
 //  routing. All game logic lives in each game's own folder
 //  (see games-registry.js). Nothing here is game-specific.
@@ -544,7 +544,9 @@ async function startBot() {
                         text:
                             `🎮 *Game Switcher*\n\n` +
                             `› \`/game setgame [key]\` — switch the active game\n` +
-                            `› \`/game setadminaccess [key|all]\` — scope the admin to one game\n` +
+                            `› \`/game set public [on/off]\` — non-admin visibility, bot-wide\n` +
+                            `› \`/game set start [on/off]\` — public lobby start, bot-wide\n` +
+                            `› \`/game set autojoin [on/off]\` — creator/admin auto-join, bot-wide\n` +
                             `› \`/game status\` — show what's active and what's available\n` +
                             `› \`/game roletags on|off\` — toggle (Creator)/(Admin) tags bot-wide\n\n` +
                             `Available games: *${registry.listGameKeys().join(', ') || 'none loaded'}*`

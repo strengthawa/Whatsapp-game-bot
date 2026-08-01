@@ -1,5 +1,5 @@
 // ============================================================
-//  HangmanGame/publicCommands.js — HMG Bot · Sky Graphics
+//  HangmanGame/publicCommands.js — Hangman · Sky Graphics
 //  Handles all PUBLIC (non-admin) message flow for this game:
 //    !hmg            — ping + intro
 //    !hmg start      — open a lobby
@@ -15,6 +15,7 @@
 
 const matchSummary = require('./matchSummary')
 const { nameTag, resolveSetting } = require('../permissions')
+const kernel = require('../gameKernel')
 const config = require('./config')
 const engine = require('./gameEngine')
 
@@ -45,18 +46,21 @@ async function handlePublicMessage(msgCtx) {
 
     const ctx = buildCtx()
 
-    // ── !hmg (alone) = ping + intro card ────────────────────
+    // ── !hmg (alone) = single-message identity + intro card ──
+    // Previously 4 separate messages (Ping/Pong/latency/card) — a
+    // debug artifact left wired into the highest-traffic command.
+    // Collapsed to one message: the identity/liveness signal is now
+    // the card's own first line, not 3 messages ahead of it.
     if (body === config.PREFIX) {
-        const pingStart = Date.now()
-        await sock.sendMessage(from, { text: '🏓 Ping!' })
-        await sock.sendMessage(from, { text: '🏓 Pong!' })
-        const pingMs = Date.now() - pingStart
-        await sock.sendMessage(from, { text: `⚡ *${config.GAME_ACRONYM} Bot* | Response time: *${pingMs}ms*` })
-
+        // No real round-trip left to time (the old 2-message ping/pong
+        // exchange was the only thing producing a genuine latency
+        // number, and it's gone). "online" is an honest liveness
+        // signal; a fabricated 0ms figure would not be.
         await sock.sendMessage(from, {
             text:
                 `${config.DIVIDER}\n` +
                 `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM}) Bot*\n` +
+                `🤖 ${kernel.botIdentityLine()}\n` +
                 `${config.DIVIDER}\n` +
                 `Hey there! 👋 I'm the *${config.GAME_ACRONYM} Bot* — a live multiplayer word-guessing game built for WhatsApp groups.\n` +
                 `Players take turns guessing letters to reveal a hidden word. Miss 3 turns in a row and you're out! The last one standing wins. 🏆\n` +
@@ -165,7 +169,7 @@ async function handlePublicMessage(msgCtx) {
                     `5️⃣ Miss *3 turns in a row* and you're disqualified 🚫\n` +
                     `6️⃣ Last player standing wins! 🏆\n` +
                     `📏 Word length adapts automatically each round — no fixed difficulty setting.\n\n` +
-                    `_Created with ❤️ by Sky Graphics_ 🎨`
+                    `_Sky Graphics — ${config.GAME_NAME}_`
             })
             return true
         }
@@ -195,7 +199,8 @@ async function handlePublicMessage(msgCtx) {
             text: `⚡ *INSTANT WIN!* ${nameTag(senderNumber, nameCache, settings)} guessed the full word *${gameState.targetWord.toUpperCase()}*! Incredible! 🎉🏆`
         })
         const outcome = { type: 'winner_instant', winnerNumber: senderNumber }
-        await matchSummary.sendMatchReport(sock, from, gameState, outcome, (n) => nameTag(n, nameCache, settings))
+        const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+        await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
         engine.adjustNextWordLength(gameState, outcome)
         gameState.players = []
         persistGames()
@@ -225,7 +230,8 @@ async function handlePublicMessage(msgCtx) {
                 text: `🎉 *VICTORY!* The word was *${gameState.targetWord.toUpperCase()}*! Well done! 🏆`
             })
             const outcome = { type: 'winner_letter', winnerNumber: senderNumber }
-            await matchSummary.sendMatchReport(sock, from, gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
             engine.adjustNextWordLength(gameState, outcome)
             gameState.players = []
             persistGames()
@@ -279,7 +285,8 @@ async function handlePublicMessage(msgCtx) {
                 text: `${dqFeedback}\n\n🏆 *LAST PLAYER STANDING!*\nThe word was *${gameState.targetWord.toUpperCase()}*. 🎉`
             })
             const outcome = { type: 'last_standing', winnerNumber: lastStanding }
-            await matchSummary.sendMatchReport(sock, from, gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
             engine.adjustNextWordLength(gameState, outcome)
             gameState.players = []
             persistGames()
@@ -290,7 +297,8 @@ async function handlePublicMessage(msgCtx) {
                 text: `${dqFeedback}\n\n💀 *GAME OVER!* No players remain.\nThe word was *${gameState.targetWord.toUpperCase()}*.`
             })
             const outcome = { type: 'no_winner' }
-            await matchSummary.sendMatchReport(sock, from, gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
             engine.adjustNextWordLength(gameState, outcome)
             persistGames()
             await engine.startCooldown(from, ctx)

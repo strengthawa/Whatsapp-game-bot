@@ -117,14 +117,18 @@ project root, following the shapes documented there —
 Two separate, fixed, game-independent prefixes — neither lives inside
 any individual game's folder:
 
-- **`/admin`** answers *"who is allowed to run admin commands, and for
-  which game(s)"* — bot identity. Request access, redeem a key, or have
-  the creator assign someone directly with `/admin set [num] [gamekey|all]`.
-- **`/game`** answers *"which game is currently live, and what can the
-  current admin touch"* — bot configuration. `/game setgame [key]`
-  switches games (cleanly stopping any live session first, if the
-  outgoing game supports it); `/game setadminaccess [gamekey|all]`
-  scopes the admin; `/game status` shows both at a glance.
+- **`/admin`** answers *"who is registered on this bot, and what
+  game(s) are they stationed on"* — bot identity. Request access,
+  redeem a key to become Registered, then the creator **stations**
+  them on a game separately with `/admin set [num] [gamekey|all]` —
+  connecting and being assigned a game are always two distinct steps.
+- **`/game`** answers *"which game is currently live, and what are
+  the bot-wide toggles"* — configuration, not identity. `/game
+  setgame [key]` switches games (cleanly stopping any live session
+  first, if the outgoing game supports it); `/game set public|start|
+  autojoin [on|off]` are the bot-wide toggles; `/game status` shows
+  both at a glance. Station assignment does **not** live here —
+  that's `/admin`'s job, exclusively.
 
 Full command tables for all three games: [`COMMAND_REFERENCE.md`](./COMMAND_REFERENCE.md) §1.
 

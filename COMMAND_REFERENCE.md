@@ -1,4 +1,4 @@
-# COMMAND_REFERENCE.md — HMG Bot · Sky Graphics
+# COMMAND_REFERENCE.md — Game Bots · Sky Graphics
 
 One file to answer three questions: **what commands exist**, **what does
 every message look like**, and **what does a game folder look like**.
@@ -13,36 +13,73 @@ These live in shared, game-agnostic files — never duplicated per game.
 Both use a **fixed prefix** so they always work, even if the currently
 active game is broken or its folder is missing entirely.
 
-### `/admin` — admin *identity* (who is the admin, for which game) — `admin-onboarding.js`
+### `/admin` — admin *identity* (who is registered, who is stationed on what) — `admin-onboarding.js`
+
+Two distinct states, two distinct words, used consistently everywhere in
+this file and in the bot's own messages:
+- **Registered** — connected to the bot itself (redeemed a key, or was
+  directly set). No game decided yet.
+- **Stationed** — assigned to operate one or more specific games.
+
+An admin can be Registered without being Stationed on anything yet —
+that's the normal state right after redeeming a key, and it's a
+deliberate two-step process: connecting and being assigned a game are
+always separately triggered, separately confirmed, separately notified.
 
 | Command | Tier | What it does |
 |---|---|---|
-| `/admin` | Everyone | Request access. Generates a key, DMs the creator to approve/deny |
-| `/admin [key]` | Everyone | Redeem a key you were given |
-| `/admin approve [num] [gamekey\|all]` | Creator | Deliver the key, scoped to one game or all |
+| `/admin` | Everyone | Creator sees their own status; a Registered admin sees whether they're Stationed yet; anyone else requests access (generates a key, DMs the creator) |
+| `/admin [key]` | Everyone | Redeem a key — this is what makes you Registered. You are NOT Stationed on anything yet after this |
+| `/admin approve [num]` | Creator | Authorizes the connection and delivers the key. Does **not** decide a game — that's a separate step, below |
 | `/admin deny [num]` | Creator | Void a pending request |
-| `/admin set [num] [gamekey\|all]` | Creator or Admin | Assign admin directly, no key needed |
-| `/admin confirm` / `/admin cancel` | Creator or Admin | Apply or discard a pending `set` |
-| `/admin clear` | Creator only | Remove the admin identity entirely |
+| `/admin set [num] [gamekey\|all]` | Creator or Admin | **Stations** — adds `gamekey` to that admin's existing stations, or replaces with `all`. Works whether `num` is already Registered or brand new (a direct-install shortcut that skips the key exchange entirely) |
+| `/admin clear [gamekey\|all]` | Creator or Admin | **Un-stations** — removes `gamekey` from that admin's stations, or wipes on `all`. Auto-de-registers if this empties their stations |
+| `/admin confirm` / `/admin cancel` | Creator or Admin | Apply or discard a pending `set` or `clear` |
+| `/admin clear` (no args) | Creator only | De-register the admin identity entirely, immediately, no confirm step |
 | `/admin help` | Creator or Admin | This command list |
+
+`settings.adminGameAccess` is `'all' | string[]` — never a single bare
+gamekey string once written through `set`/`clear` (a legacy single-string
+value may still exist on data written before this model; `permissions.js`
+`hasGameAccess()` reads that shape too, so nothing breaks on upgrade,
+but every write goes out as `'all'` or an array). A newly-Registered
+admin (via key redemption) always starts as `[]` — Registered, zero
+stations — never `'all'`. See `permissions.js` for `hasGameAccess()` /
+`gameAccessList()` / `describeGameAccess()` — the single source of
+truth for reading this value; no other file should inline its own
+scope check.
 
 All replies go **privately to the sender's own DM** — never posted back
 into the group the command was typed in.
 
-### `/game` — which game is active, and what the admin can touch — `game-switch-commands.js`
+### `/game` — which game is active, and bot-wide toggles — `game-switch-commands.js`
 
 | Command | Tier | What it does |
 |---|---|---|
 | `/game setgame [key]` | Creator | Switch the active game (cleanly stops the old one's live session first, if it supports that) |
-| `/game setadminaccess [gamekey\|all]` | Creator | Scope which game(s) the admin's commands work on |
-| `/game status` | Creator or Admin | Active game, admin's scope, all available game keys |
+| `/game set public [on\|off]` | Creator or Admin | Toggle `publicVisible`, bot-wide — governs whichever game is active |
+| `/game set start [on\|off]` | Creator or Admin | Toggle `publicCanStart`, bot-wide |
+| `/game set autojoin [on\|off]` | Creator or Admin | Toggle creator/admin auto-join on lobby open, bot-wide |
+| `/game status` | Creator or Admin | Active game, admin's stations, all available game keys |
 | `/game roletags on\|off` | Creator | Toggle the (Creator)/(Admin) name tag, bot-wide |
 
-**Why two prefixes, not one:** `/admin` answers "who is allowed to run
+There used to be a `/game setadminaccess [gamekey|all]` here too — cut
+entirely. It was a second, differently-behaved path (direct replace)
+to the exact same outcome `/admin set`/`/admin clear` already cover
+(additive/subtractive), and having two commands that both claim to
+answer "what can the admin operate" — with different semantics — was
+exactly the kind of redundant, confusing surface this whole restructure
+exists to remove. Station assignment now happens in exactly one place.
+
+**Why two prefixes, not one:** `/admin` answers "who is registered,
+and what are they stationed on" — bot identity. `/game` answers
 admin commands, and for which games" — bot identity. `/game` answers
 "which game is currently live, and what can the *current* admin touch"
-— bot configuration. Neither depends on the other, and neither lives
-inside any individual game's folder.
+— bot configuration, including the three bot-wide toggles above. Those
+three used to be exposed only through Hangman's own admin commands
+(`/hmg set public`, etc.) — see ARCHITECTURE.md §10.4 for why that was
+wrong and why they moved here. Neither `/admin` nor `/game` depends on
+the other, and neither lives inside any individual game's folder.
 
 ---
 
@@ -97,8 +134,12 @@ warnings, errors)
   and if the action touches a *live* session, **separately post a
   differently-worded announcement to the actual game chat**
   (`activeGameChatRef.value`)
-- Bare-acronym safety: typing just `!hmg` or `!wcl` alone always shows
-  the explainer card and **never** starts or joins anything
+- Bare-acronym safety: typing just `!hmg`, `!wcl`, or `!roast` alone
+  always shows the explainer card — one message, with `🤖 online` as
+  its own first line (via `gameKernel.botIdentityLine()`) — and
+  **never** starts or joins anything
+- If a game has a `matchSummary.js`, it builds and returns a report; it
+  never sends. See ARCHITECTURE.md §10.2
 
 ### What each game tweaks (via its own `config.js`)
 | Field | Hangman | Word Climb |
@@ -131,18 +172,16 @@ the *shapes* and *shared vocabulary* stay fixed, the *flavor* doesn't.
 | Command | What it does |
 |---|---|
 | `/hmg help` | Dashboard (DM only) |
-| `/hmg start` | Force-start / break a cooldown early |
-| `/hmg pause` / `/hmg resume` | Freeze / unfreeze the turn timer |
+| `/hmg begin` | Force-start the *currently open* lobby now (min `MIN_PLAYERS_TO_BEGIN`, currently 1) — same name/shape as `/wcl begin` |
+| `/hmg skipcooldown` | Break the post-round auto-cooldown, open a fresh lobby immediately — Hangman-specific, no other game auto-cools-down |
+| `/hmg pause` / `/hmg resume` | Freeze / unfreeze the turn timer (via `gameEngine.js`, kernel-backed — see ARCHITECTURE.md §10.1) |
 | `/hmg end` / `/hmg stop` | Terminate the session |
 | `/hmg status` | Full state dump |
-| `/hmg set maxtries [n\|auto]` | Override guess-attempt limit |
-| `/hmg set public [on\|off]` | Toggle public visibility |
-| `/hmg set start [on\|off]` | Toggle `publicCanStart` |
-| `/hmg set autojoin [on\|off]` | Toggle auto-join behavior |
+| `/hmg set maxtries [n\|auto]` | Override guess-attempt limit — Hangman-specific, stays here |
 | `/hmg addword` / `removeword` / `listwords` / `setwords` / `clearwords` | Manage the word pool |
-| `/hmg clearadmin` | Reset Hangman's *own* settings only (see below) |
-| `/hmg reset` | Reset word pool + settings, admin identity untouched |
-| `/hmg admin` / `approve` / `deny` / `set admin` / `confirm` / `cancel` | **Redirect only** → use `/admin` (see §1) |
+| `/hmg resetsettings` | Reset Hangman's *own* setting (max tries) only — bot-wide toggles are never touched from here (see §1) |
+| `/hmg reset` | Reset word pool + Hangman's own settings, admin identity untouched |
+| `/hmg set admin` / `admin` / `approve` / `deny` / `confirm` / `cancel` | **Redirect only** → use `/admin` for identity (see §1) |
 
 ### Word Climb (`!wcl` / `/wcl `)
 
@@ -160,33 +199,41 @@ the *shapes* and *shared vocabulary* stay fixed, the *flavor* doesn't.
 | Command | What it does |
 |---|---|
 | `/wcl help` | Dashboard (DM only) |
-| `/wcl status` | Lobby/climb state, current rung, turn timer |
+| `/wcl status` | Lobby/climb state, current rung, turn timer, paused/live indicator |
+| `/wcl pause` / `/wcl resume` | Freeze / unfreeze the turn timer (kernel-backed, same contract as Hangman's) |
 | `/wcl stop` / `end` | Terminate the session |
 | `/wcl reset` | Hard-wipe this chat's Word Climb state |
-| `/wcl setturnseconds <10-90>` | Per-turn timer for the *next* match |
+| `/wcl setturnseconds <10-90>` | Per-turn timer for the *next* match — Word Climb-specific |
 
-**A note on why the two admin command lists aren't the same length:**
-Hangman has accumulated word-pool and access-toggle commands over time;
-Word Climb doesn't need equivalents yet (no word pool to manage — its
-dictionary is fixed, and its access toggles are the same
-`publicCanStart` setting every game already reads via
-`resolveSetting()`). Same *shape*, different *surface area*, which is
-expected — see ARCHITECTURE.md if a game genuinely needs a new kind of
-setting.
+**A note on why the two admin command lists still aren't the same
+length:** Hangman has word-pool commands Word Climb genuinely has no
+equivalent for (fixed dictionary, not a curated pool). Everything
+game-agnostic — pause/resume, lobby-open with auto-join, the
+`publicVisible`/`publicCanStart`/`autoJoin` toggles — is now shared
+between both (the toggles live at `/game`, not duplicated per game; see
+§1). What's left different between the two games is genuinely
+game-specific surface area, not an abstraction gap.
 
 ---
 
 ### Roast Game (`!roast` / `/roast `)
 
 No lobby, no round, no live session — every request is a stateless
-lookup into `roastData.js`.
+lookup into `roastData.js`. No `pause`/`resume`/kernel session commands
+either, deliberately — see ARCHITECTURE.md §10.1 on not adding those for
+symmetry's sake.
 
 **Public:**
 | Command | What it does |
 |---|---|
 | `!roast` (bare) / `!roast help` | Explainer card, never stateful |
-| `!roast me` / `!roast me again` | Nice-tier roast, variation A/B (DM only) |
-| `!roast savage` / `!roast savage again` | Savage-tier roast, variation A/B (DM only) |
+| `!roast me` / `!roast me again` | Nice-tier roast, variation A/B — **DM only, enforced in code** |
+| `!roast savage` / `!roast savage again` | Savage-tier roast, variation A/B — **DM only, enforced in code** |
+
+Typed inside a group, `me`/`savage` never reach `roastData.js` at all —
+the group gets a one-line redirect to DM instead, and no profile lookup
+happens. This used to only be a README claim; it's now a real gate in
+`publicCommands.js`, checked before anything else in the handler.
 
 **Admin:**
 | Command | What it does |
@@ -208,7 +255,8 @@ near-miss spelling — see RoastGame/README.md "How matching works".
 index.js                  — message loop, dispatch to /admin, /game, or active game
 permissions.js            — tier resolution (CREATOR/ADMIN/PUBLIC), nameTag(), settings helpers
 admin-onboarding.js        — /admin ... (identity: who's admin, for which game(s))
-game-switch-commands.js    — /game ... (which game is active, admin's scope)
+game-switch-commands.js    — /game ... (which game is active, admin's scope, bot-wide toggles)
+gameKernel.js               — shared plugin-kernel: buildCard(), pauseTimer()/resumeTimer(), botIdentityLine()
 games-registry.js          — discovers + loads every game folder, validates the contract
 ARCHITECTURE.md            — the plugin contract every game folder must satisfy
 COMMAND_REFERENCE.md        — this file

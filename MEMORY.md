@@ -1,4 +1,4 @@
-#Memory — HMG Bot / Sky Graphics WhatsApp Game Platform
+#Memory — Game Bots / Sky Graphics WhatsApp Game Platform
 
 ## Who I am, how I work
 
@@ -144,12 +144,26 @@ a group chat, not giving it sustained focus. Judge games on:
   multiple docs and even a stale code comment; verify against actual
   `sock.sendMessage` call sites, not comments).
 - **Word Climb (`wordclimb`, `!wcl`/`/wcl`)** — built this project.
-  Turn-based elimination; required word length escalates a rung (3→8
-  letters) every full lap of the rotation; 3 cumulative strikes = out;
-  winner is last-standing or highest length reached at the top (ties
-  broken by fewest strikes). Curated offline word bank, not a full
-  dictionary — swapping in `word-list` npm package is a noted future
-  upgrade.
+  Turn-based elimination; required word length escalates a rung (3→12
+  letters, widened from 8) every full lap of the rotation; 3 cumulative
+  strikes = out; winner is last-standing or highest length reached at
+  the top (ties broken by fewest strikes). Word bank is now a real
+  offline dictionary (234k+ words filtered/deduped/profanity-checked,
+  static `dictionary-data.json`, not a live `word-list` require — that
+  package's current version is ESM-only and would conflict with this
+  project's CommonJS setup). Early-start (`begin`) moved from a public,
+  any-joined-player command to admin-only (`/wcl begin`), floor dropped
+  from a hardcoded 2 players to `config.MIN_PLAYERS_TO_BEGIN` (1) — a
+  solo climb is allowed and resolves cleanly via the normal
+  "reached_top" win path.
+- **Roast Game (`roast`, `!roast`/`/roast`)** — stateless, no lobby or
+  round: every request is a direct lookup into `roastData.js`. Was
+  missing from this list even though it shipped and is fully documented
+  in `COMMAND_REFERENCE.md` — a stale-doc bug in this file itself,
+  caught during the kernel-extraction pass. Its one real bug (privacy
+  guarantee unenforced in code — `!roast me` in a group leaked into the
+  group) is now fixed: a DM/group check gates delivery before any
+  profile lookup runs.
 
 ## Environment / ops
 
@@ -172,3 +186,29 @@ a group chat, not giving it sustained focus. Judge games on:
 - Verify `.env` is actually present and correctly formatted on the
   local machine now that hosting moved from Railway to local — this
   was mid-investigation when the topic changed.
+- `/admin clear [gamekey]` on a currently-unrestricted (`'all'`) admin
+  materializes "every other loaded game" as a one-time snapshot list,
+  since the model has no way to store a standing "all except X" rule.
+  If a new game folder is added later, it will NOT automatically be
+  excluded for that admin too — re-run the clear command if that
+  matters. Documented in `admin-onboarding.js` at the point it happens;
+  noting here so it isn't rediscovered as a surprise.
+
+## Resolved this session (previously open, now fixed — kept here
+## briefly as a record, not because they need re-surfacing)
+
+- Admin game-access scoping (`settings.adminGameAccess`) was only ever
+  enforced in `HangmanGame`'s admin handler — `WordClimbGame` and
+  `RoastGame` never checked it, so a scoped-out admin had full run of
+  both. Fixed via `permissions.hasGameAccess()`, folded into `isAdmin`
+  in all three games (see `ARCHITECTURE.md` §5).
+- `adminGameAccess` moved from a single string to a `'all' | string[]`
+  list model. `/admin set` is now additive, `/admin clear [gamekey|all]`
+  is the new subtractive mirror (both go through the same confirm/
+  cancel step; auto-demotes if a clear empties the scope).
+- `!wcl begin` moved from a public, any-joined-player command with a
+  hardcoded 2-player floor to admin-only `/wcl begin`, floor now
+  `config.MIN_PLAYERS_TO_BEGIN` (set to 1).
+- `WordClimbGame`'s word bank moved from a hand-typed 3–8 letter array
+  to a real, offline-generated 3–12 letter dictionary (static JSON, no
+  runtime dependency — see `wordBank.js`).

@@ -18,15 +18,32 @@
 //  currently active.
 //
 //  Commands:
-//    /admin                — request access (or "welcome back" if
-//                             already Creator/Admin)
-//    /admin [key]           — redeem a previously-issued key
-//    /admin approve [num]   — creator only: deliver the key
-//    /admin deny [num]      — creator only: void the request
+//    /admin                       — request access (or "welcome back" if
+//                                    already Creator/Admin)
+//    /admin [key]                 — redeem a previously-issued key
+//    /admin approve [num]         — creator only: deliver the key
+//    /admin deny [num]            — creator only: void the request
+//    /admin set [num] [gamekey|all]   — creator/admin: grant access,
+//                                    ADDS gamekey to the current scope
+//                                    (or replaces it with 'all')
+//    /admin clear [gamekey|all]   — creator/admin: revoke access,
+//                                    REMOVES gamekey from the current
+//                                    scope (or wipes it entirely on
+//                                    'all') — auto-demotes to PUBLIC
+//                                    if this empties the scope
+//    /admin clear                 — creator only, no args: removes the
+//                                    admin identity entirely (unchanged
+//                                    from before the list model)
+//
+//  settings.adminGameAccess is 'all' | string[] — see permissions.js
+//  hasGameAccess()/gameAccessList()/describeGameAccess() for the
+//  single source of truth on reading/formatting it. Every write in
+//  this file goes through gameAccessList() so the array-vs-'all'
+//  shape never has to be branched on more than once per command.
 // ============================================================
 
 const crypto = require('crypto')
-const { TIERS } = require('./permissions')
+const { TIERS, gameAccessList, describeGameAccess } = require('./permissions')
 const registry = require('./games-registry')
 
 const DIVIDER   = '━━━━━━━━━━━━━━━━━━━━━━'
@@ -49,8 +66,9 @@ let pendingManualChange = null
 let adminLastActive = 0
 let adminInactivityTimer = null
 
-// Resolves a "[gamekey|all]" argument the same way "/game setadminaccess"
-// does, so both entry points agree on what a valid scope looks like.
+// Resolves a "[gamekey|all]" argument for /admin set and /admin clear —
+// the one place this parsing logic lives, so both agree on what a
+// valid gamekey/scope looks like.
 // Returns { ok: true, scope } or { ok: false, error }.
 function resolveGameScope(rawScope) {
     if (!rawScope || rawScope.toLowerCase() === 'all') {
@@ -198,8 +216,9 @@ async function handleAdminOnboarding(ctx) {
 
         text +=
             `*Creator or Admin:*\n` +
-            `› \`/admin set [num] [gamekey|all]\` — assign admin directly, no key needed\n` +
-            `› \`/admin confirm\` / \`/admin cancel\` — apply or discard a pending \`set\`\n\n` +
+            `› \`/admin set [num] [gamekey|all]\` — grant access; adds *gamekey* to their existing scope (or replaces it with *all*)\n` +
+            `› \`/admin clear [gamekey|all]\` — revoke access; removes *gamekey* from their scope (or wipes it on *all*) — auto-demotes if it empties their scope\n` +
+            `› \`/admin confirm\` / \`/admin cancel\` — apply or discard a pending \`set\`/\`clear\`\n\n` +
             `${DIVIDER}\n` +
             `_Each game's own commands live under its own prefix — type \`${helpHint}\`._`
 
@@ -228,16 +247,31 @@ async function handleAdminOnboarding(ctx) {
         }
 
         if (isAdmin && settings.adminNumber !== '') {
+            const hasStation = settings.adminGameAccess === 'all' ||
+                (Array.isArray(settings.adminGameAccess) && settings.adminGameAccess.length > 0) ||
+                (typeof settings.adminGameAccess === 'string' && settings.adminGameAccess !== '')
+
             await sendSafeMessage(sock, senderJid, {
-                text:
-                    `${DIVIDER}\n` +
-                    `   👑  Bot Administrator\n` +
-                    `${DIVIDER}\n\n` +
-                    `Welcome back, *Administrator*. 👋\n\n` +
-                    `You have full admin control across every game this bot runs.\n\n` +
-                    `Type *${helpHint}* to open your dashboard.\n\n` +
-                    `${DIVIDER}\n` +
-                    `_Sky Graphics_ 🎨`
+                text: hasStation
+                    ? (
+                        `${DIVIDER}\n` +
+                        `   👑  Bot Administrator\n` +
+                        `${DIVIDER}\n\n` +
+                        `Welcome back, *Administrator*. 👋\n\n` +
+                        `You're *registered* on this bot, stationed on: *${describeGameAccess(settings)}*.\n\n` +
+                        `Type *${helpHint}* to open your dashboard.\n\n` +
+                        `${DIVIDER}\n` +
+                        `_Sky Graphics_ 🎨`
+                    ) : (
+                        `${DIVIDER}\n` +
+                        `   👑  Bot Administrator\n` +
+                        `${DIVIDER}\n\n` +
+                        `Welcome back, *Administrator*. 👋\n\n` +
+                        `You're *registered* on this bot, but not *stationed* on a game yet — your creator hasn't assigned you one.\n\n` +
+                        `Check back with *${helpHint}* once you've been assigned. 🕓\n\n` +
+                        `${DIVIDER}\n` +
+                        `_Sky Graphics_ 🎨`
+                    )
             })
             return true
         }
@@ -322,12 +356,23 @@ async function handleAdminOnboarding(ctx) {
     // ══════════════════════════════════════════════
     //  /admin approve [number] — CREATOR ONLY
     // ══════════════════════════════════════════════
+    // ══════════════════════════════════════════════
+    //  /admin approve [number] — CREATOR ONLY
+    //  Authorizes the connection ONLY — no game decision happens here
+    //  anymore. The requester redeems their key and becomes REGISTERED
+    //  with no game assigned; the creator then STATIONS them on a game
+    //  separately via /admin set. This used to take a [gamekey|all]
+    //  argument and decide scope before the person had even connected —
+    //  moved to /admin set, which is now the single place assignment
+    //  happens, so "connect" and "assign a game" are always two
+    //  distinct, separately-notified steps.
+    // ══════════════════════════════════════════════
     if (cmd[0] === 'approve') {
         if (!senderIsCreator) return true
 
         const targetNumber = (cmd[1] || '').replace(/[^0-9]/g, '')
         if (!targetNumber) {
-            await sendSafeMessage(sock, creatorJid, { text: `⚠️ Usage: \`/admin approve [number] [gamekey|all]\`` })
+            await sendSafeMessage(sock, creatorJid, { text: `⚠️ Usage: \`/admin approve [number]\`` })
             return true
         }
 
@@ -350,13 +395,6 @@ async function handleAdminOnboarding(ctx) {
             return true
         }
 
-        const scopeResult = resolveGameScope(cmd[2])
-        if (!scopeResult.ok) {
-            await sendSafeMessage(sock, creatorJid, { text: `⚠️ ${scopeResult.error}` })
-            return true
-        }
-        session.scope = scopeResult.scope
-
         try {
             await sendSafeMessage(sock, targetJid, {
                 text:
@@ -378,8 +416,8 @@ async function handleAdminOnboarding(ctx) {
             await sendSafeMessage(sock, creatorJid, {
                 text:
                     `✅ *Key delivered to* \`${targetNumber}\`\n\n` +
-                    `Scope: *${scopeResult.scope === 'all' ? 'ALL games' : scopeResult.scope}*\n` +
-                    `They now have until the 10-minute window closes to activate. ⏱️`
+                    `They now have until the 10-minute window closes to activate. Once they redeem it, station them on a game with:\n` +
+                    `\`/admin set ${targetNumber} [gamekey|all]\` ⏱️`
             })
         } catch (err) {
             await sendSafeMessage(sock, creatorJid, {
@@ -442,76 +480,47 @@ async function handleAdminOnboarding(ctx) {
             return true
         }
 
-        pendingManualChange = { number: newAdmin, scope: scopeResult.scope }
+        // Same admin already on file? "set" is additive — stations one
+        // more game on top of whatever they're already stationed on.
+        // Different number? This is the direct-install shortcut (no key
+        // needed) — still valid, unchanged from before; it's a separate
+        // path from "approve → redeem → set" and both are fine to keep.
+        const isSameAdmin = !!settings.adminNumber && newAdmin === settings.adminNumber
+        pendingManualChange = { action: 'set', number: newAdmin, scope: scopeResult.scope, isSameAdmin }
+
+        const scopePreview = scopeResult.scope === 'all'
+            ? 'ALL games'
+            : isSameAdmin && settings.adminGameAccess !== 'all'
+                ? `${describeGameAccess(settings)} + ${scopeResult.scope}`
+                : scopeResult.scope
+
         await sendSafeMessage(sock, senderJid, {
             text:
-                `⚠️ *Confirm Admin Change?*\n\n` +
-                `New number: *${newAdmin}*\n` +
-                `Scope: *${scopeResult.scope === 'all' ? 'ALL games' : scopeResult.scope}*\n\n` +
+                `⚠️ *Confirm Station Assignment?*\n\n` +
+                `Number: *${newAdmin}*${isSameAdmin ? ' _(already registered — adding a station)_' : ' _(registered, not yet stationed)_'}\n` +
+                `Stationed on after this change: *${scopePreview}*\n\n` +
                 `Type */admin confirm* to apply, or */admin cancel* to discard.`
         })
         return true
     }
 
-    if (cmd[0] === 'confirm') {
-        if (!senderIsCreator && !isAdmin) return true
-
-        if (!pendingManualChange) {
-            await sendSafeMessage(sock, senderJid, { text: `⚠️ Nothing to confirm. Use \`/admin set [number] [gamekey|all]\` first.` })
-            return true
-        }
-
-        const confirmed = pendingManualChange
-        pendingManualChange = null
-        settings.adminNumber = confirmed.number
-        settings.adminJid    = ''
-        settings.adminGameAccess = confirmed.scope || 'all'
-        saveSettings()
-        startAdminInactivityTimer(settings, saveSettings, sock, sendSafeMessage)
-
-        await sendSafeMessage(sock, senderJid, {
-            text:
-                `✅ *Admin updated to* \`${settings.adminNumber}\` — scope: *${settings.adminGameAccess === 'all' ? 'ALL games' : settings.adminGameAccess}*\n\n` +
-                `New admin must send any message to the bot so their JID is captured. 📡`
-        })
-        try {
-            await sendSafeMessage(sock, `${settings.adminNumber}@s.whatsapp.net`, {
-                text:
-                    `${DIVIDER}\n` +
-                    `   👑  You're the Admin\n` +
-                    `${DIVIDER}\n\n` +
-                    `Welcome! 🎉 You've been assigned as an administrator for *${settings.adminGameAccess === 'all' ? 'every game this bot runs' : settings.adminGameAccess}*.\n\n` +
-                    `Type *${helpHint}* to see all your commands.\n\n` +
-                    `${DIVIDER}\n` +
-                    `_Sky Graphics_ 🎨`
-            })
-        } catch (err) {
-            console.log('⚠️ Could not DM new admin:', err.message)
-        }
-        return true
-    }
-
-    if (cmd[0] === 'cancel') {
-        if (!senderIsCreator && !isAdmin) return true
-
-        if (pendingManualChange) {
-            const cancelled = pendingManualChange.number
-            pendingManualChange = null
-            await sendSafeMessage(sock, senderJid, { text: `❌ Admin change to \`${cancelled}\` cancelled.` })
-        } else {
-            await sendSafeMessage(sock, senderJid, { text: `⚠️ Nothing to cancel.` })
-        }
-        return true
-    }
-
     // ══════════════════════════════════════════════
-    //  /admin clear — CREATOR ONLY
-    //  Removes the admin identity entirely. Deliberately creator-only
-    //  (unlike "set", which an existing admin can also do) — an admin
-    //  shouldn't be able to lock everyone else out including the
-    //  creator's ability to re-onboard cleanly.
+    //  /admin clear             — CREATOR ONLY, no args
+    //                             Removes the admin identity entirely,
+    //                             immediately — no confirm step, same as
+    //                             before the list model. Deliberately
+    //                             creator-only (unlike the scoped form
+    //                             below) — an admin shouldn't be able to
+    //                             lock everyone else out including the
+    //                             creator's ability to re-onboard cleanly.
+    //  /admin clear [gamekey|all] — CREATOR or ADMIN
+    //                             Mirrors "set" in the opposite direction
+    //                             and goes through the SAME confirm/cancel
+    //                             step — revoking access is consequential
+    //                             enough (can fully demote someone) that
+    //                             it deserves the same safety net as set.
     // ══════════════════════════════════════════════
-    if (cmd[0] === 'clear') {
+    if (cmd[0] === 'clear' && !cmd[1]) {
         if (!senderIsCreator) return true
 
         const cleared = settings.adminNumber
@@ -527,6 +536,153 @@ async function handleAdminOnboarding(ctx) {
                 `${cleared || 'No admin'} has been removed. The next */admin* request will begin fresh onboarding. 🔑\n\n` +
                 `Per-game settings (word pools, timers, etc.) are untouched — clear those individually via each game's own admin \`reset\`.`
         })
+        return true
+    }
+
+    if (cmd[0] === 'clear') {
+        if (!senderIsCreator && !isAdmin) return true
+
+        if (!settings.adminNumber) {
+            await sendSafeMessage(sock, senderJid, { text: `⚠️ There's no admin set right now — nothing to clear.` })
+            return true
+        }
+
+        const scopeResult = resolveGameScope(cmd[1])
+        if (!scopeResult.ok) {
+            await sendSafeMessage(sock, senderJid, { text: `⚠️ ${scopeResult.error}` })
+            return true
+        }
+
+        pendingManualChange = { action: 'clear', scope: scopeResult.scope }
+
+        const preview = scopeResult.scope === 'all'
+            ? 'nothing — fully de-registered'
+            : (() => {
+                const remaining = settings.adminGameAccess === 'all'
+                    ? registry.listGameKeys().filter(k => k !== scopeResult.scope)
+                    : gameAccessList(settings).filter(k => k !== scopeResult.scope)
+                return remaining.length ? remaining.join(', ') : 'nothing — fully de-registered'
+            })()
+
+        await sendSafeMessage(sock, senderJid, {
+            text:
+                `⚠️ *Confirm Station Revoke?*\n\n` +
+                `Admin: *${settings.adminNumber}*\n` +
+                `Revoking: *${scopeResult.scope === 'all' ? 'ALL games' : scopeResult.scope}*\n` +
+                `Stationed on after this change: *${preview}*\n\n` +
+                `Type */admin confirm* to apply, or */admin cancel* to discard.`
+        })
+        return true
+    }
+
+    if (cmd[0] === 'confirm') {
+        if (!senderIsCreator && !isAdmin) return true
+
+        if (!pendingManualChange) {
+            await sendSafeMessage(sock, senderJid, { text: `⚠️ Nothing to confirm. Use \`/admin set\` or \`/admin clear\` first.` })
+            return true
+        }
+
+        const confirmed = pendingManualChange
+        pendingManualChange = null
+
+        // ── Applying a pending "set" ──────────────────────────
+        if (confirmed.action === 'set') {
+            let finalScope
+            if (confirmed.scope === 'all') {
+                finalScope = 'all'
+            } else if (confirmed.isSameAdmin && settings.adminGameAccess !== 'all') {
+                const list = gameAccessList(settings)
+                if (!list.includes(confirmed.scope)) list.push(confirmed.scope)
+                finalScope = list
+            } else if (confirmed.isSameAdmin) {
+                finalScope = 'all' // already unrestricted, adding one more game is a no-op
+            } else {
+                finalScope = [confirmed.scope] // brand-new admin — their scope starts here
+            }
+
+            settings.adminNumber = confirmed.number
+            settings.adminJid    = confirmed.isSameAdmin ? settings.adminJid : ''
+            settings.adminGameAccess = finalScope
+            saveSettings()
+            startAdminInactivityTimer(settings, saveSettings, sock, sendSafeMessage)
+
+            await sendSafeMessage(sock, senderJid, {
+                text:
+                    `✅ *Admin* \`${settings.adminNumber}\` *is stationed on:* *${describeGameAccess(settings)}*\n\n` +
+                    `New admin must send any message to the bot so their JID is captured. 📡`
+            })
+            try {
+                await sendSafeMessage(sock, `${settings.adminNumber}@s.whatsapp.net`, {
+                    text:
+                        `${DIVIDER}\n` +
+                        `   👑  You're the Admin\n` +
+                        `${DIVIDER}\n\n` +
+                        `Welcome! 🎉 You've been *stationed* on *${settings.adminGameAccess === 'all' ? 'every game this bot runs' : describeGameAccess(settings)}*.\n\n` +
+                        `Type *${helpHint}* to see all your commands.\n\n` +
+                        `${DIVIDER}\n` +
+                        `_Sky Graphics_ 🎨`
+                })
+            } catch (err) {
+                console.log('⚠️ Could not DM new admin:', err.message)
+            }
+            return true
+        }
+
+        // ── Applying a pending "clear" ─────────────────────────
+        const clearedNum = settings.adminNumber
+
+        if (confirmed.scope === 'all') {
+            settings.adminNumber = ''
+            settings.adminJid = ''
+            settings.adminGameAccess = 'all'
+            saveSettings()
+            await sendSafeMessage(sock, senderJid, {
+                text: `✅ *All stations revoked from* \`${clearedNum}\`.\n\nThey've been fully de-registered — the next */admin* request will begin fresh onboarding.`
+            })
+            return true
+        }
+
+        // This model can't store "all except X" as a standing rule, so
+        // it materializes "every OTHER game currently loaded" as an
+        // explicit list. Known limitation: a game folder added later
+        // won't automatically be excluded too — re-run this command if
+        // that matters to you.
+        const nextScope = settings.adminGameAccess === 'all'
+            ? registry.listGameKeys().filter(k => k !== confirmed.scope)
+            : gameAccessList(settings).filter(k => k !== confirmed.scope)
+
+        if (nextScope.length === 0) {
+            settings.adminNumber = ''
+            settings.adminJid = ''
+            settings.adminGameAccess = 'all'
+            saveSettings()
+            await sendSafeMessage(sock, senderJid, {
+                text: `✅ *${confirmed.scope}* station revoked — that was \`${clearedNum}\`'s last remaining station, so they've been fully de-registered.`
+            })
+            return true
+        }
+
+        settings.adminGameAccess = nextScope
+        saveSettings()
+        await sendSafeMessage(sock, senderJid, {
+            text: `✅ *${confirmed.scope}* station revoked from \`${clearedNum}\`.\n\nStill stationed on: *${describeGameAccess(settings)}*.`
+        })
+        return true
+    }
+
+    if (cmd[0] === 'cancel') {
+        if (!senderIsCreator && !isAdmin) return true
+
+        if (pendingManualChange) {
+            const label = pendingManualChange.action === 'set'
+                ? `admin change to \`${pendingManualChange.number}\``
+                : `access revoke (*${pendingManualChange.scope === 'all' ? 'ALL games' : pendingManualChange.scope}*)`
+            pendingManualChange = null
+            await sendSafeMessage(sock, senderJid, { text: `❌ Pending ${label} cancelled.` })
+        } else {
+            await sendSafeMessage(sock, senderJid, { text: `⚠️ Nothing to cancel.` })
+        }
         return true
     }
 
@@ -604,10 +760,13 @@ async function handleAdminOnboarding(ctx) {
 
         settings.adminNumber = confirmedPN || senderNumber
         settings.adminJid    = confirmedJid || senderJid
-        settings.adminGameAccess = approvedSession.scope || 'all'
+        // Redeeming a key REGISTERS the admin only — no game is STATIONED
+        // yet. That's a deliberate separate step now, via /admin set. See
+        // the "approve" block above for why this moved.
+        settings.adminGameAccess = []
         saveSettings()
 
-        console.log(`👑 Admin registered — PN: ${settings.adminNumber} | JID: ${settings.adminJid} | Scope: ${settings.adminGameAccess}`)
+        console.log(`👑 Admin registered — PN: ${settings.adminNumber} | JID: ${settings.adminJid} | not yet stationed on a game`)
         startAdminInactivityTimer(settings, saveSettings, sock, sendSafeMessage)
 
         await sendSafeMessage(sock, confirmedJid, {
@@ -616,8 +775,7 @@ async function handleAdminOnboarding(ctx) {
                 `   👑  Access Granted\n` +
                 `${DIVIDER}\n\n` +
                 `Welcome, *Administrator!* 🎉\n\n` +
-                `You now have admin control over *${settings.adminGameAccess === 'all' ? 'every game this bot runs' : settings.adminGameAccess}*.\n\n` +
-                `Type *${helpHint}* to open your dashboard.\n\n` +
+                `You're now *registered* on this bot. Your creator will *station* you on a game shortly — check back with \`/admin\` anytime to see your assignment.\n\n` +
                 `${DIVIDER}\n` +
                 `_Sky Graphics_ 🎨`
         })
@@ -629,7 +787,8 @@ async function handleAdminOnboarding(ctx) {
                         `✅ *Admin Registration Complete*\n\n` +
                         `👤 Name: *${approvedSession.senderName || 'Unknown'}*\n` +
                         `📱 Number: \`${settings.adminNumber}\`\n\n` +
-                        `_Bot is now live under new admin._ 🚀`
+                        `They're registered but not stationed on a game yet — assign one with:\n` +
+                        `\`/admin set ${settings.adminNumber} [gamekey|all]\``
                 })
             } catch (_) {}
         }

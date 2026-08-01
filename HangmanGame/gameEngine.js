@@ -1,5 +1,5 @@
 // ============================================================
-//  HangmanGame/gameEngine.js — HMG Bot · Sky Graphics
+//  HangmanGame/gameEngine.js — Hangman · Sky Graphics
 //  Pure game logic: lobby, countdowns, boards, turn management,
 //  adaptive word-length difficulty, post-round cooldown, and the
 //  per-player DM "stick figure" life tracker.
@@ -10,6 +10,7 @@
 
 const matchSummary = require('./matchSummary')
 const { nameTag, resolveSetting } = require('../permissions')
+const kernel = require('../gameKernel')
 const config = require('./config')
 
 // ─── Default flat word pool ────────────────────────────────────
@@ -597,6 +598,26 @@ function startCooldown(chatId, ctx) {
 // separate "stopped"/"switched" messages for one action.
 // Returns true if something was actually running (worth reporting),
 // false if there was nothing to clean up.
+// ─── Pause / resume — via shared kernel (gameKernel.js) ─────────
+// Previously this lived inline inside adminCommands.js (direct
+// gs.paused mutation) — the same admin-reaches-into-engine-state
+// layering bug WordClimb had for its lobby-open path. Moved here so
+// the engine owns its own state transitions and admin files stay a
+// thin glue layer, consistent with the rest of this file.
+function pauseSession(chatId, ctx) {
+    const { games } = ctx
+    const gameState = getGameState(chatId, games)
+    return kernel.pauseTimer(gameState, gameState.turnTimer, clearInterval)
+}
+
+function resumeSession(chatId, ctx) {
+    const { games, persistGames } = ctx
+    const gameState = getGameState(chatId, games)
+    const resumed = kernel.resumeTimer(gameState, () => startTurnCountdown(chatId, ctx))
+    if (resumed && typeof persistGames === 'function') persistGames()
+    return resumed
+}
+
 function forceStopActiveSession(chatId, ctx) {
     const { games, persistGames } = ctx
     const gameState = getGameState(chatId, games)
@@ -634,5 +655,7 @@ module.exports = {
     pickWordForLength,
     adjustNextWordLength,
     buildStickFigureCard,
+    pauseSession,
+    resumeSession,
     forceStopActiveSession
 }

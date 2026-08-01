@@ -1,5 +1,5 @@
 // ============================================================
-//  WordClimbGame/gameEngine.js — WCL Bot · Sky Graphics
+//  WordClimbGame/gameEngine.js — Word Climb · Sky Graphics
 //  Game-state logic AND turn-timer/messaging, following the same
 //  convention already established by HangmanGame/gameEngine.js in
 //  this project (its startTurnCountdown() also owns setInterval +
@@ -28,6 +28,7 @@
 
 const matchSummary = require('./matchSummary')
 const { nameTag, resolveSetting } = require('../permissions')
+const kernel = require('../gameKernel')
 const config = require('./config')
 const wordBank = require('./wordBank')
 
@@ -51,6 +52,7 @@ function getGameState(chatId, games) {
 function freshState() {
     return {
         active:           false,
+        paused:           false,
         lobbyActive:      false,
         lobbyTimer:       null,
         lobbySecondsLeft: config.LOBBY_SECONDS,
@@ -278,7 +280,7 @@ async function submitGuess(chatId, ctx, senderNumber, rawWord) {
     const { sock, games, settings, persistGames } = ctx
     const gameState = getGameState(chatId, games)
 
-    if (!gameState.active) return false
+    if (!gameState.active || gameState.paused) return false
     if (senderNumber !== gameState.currentPlayer) return false
 
     if (gameState.turnTimer) clearTimeout(gameState.turnTimer)
@@ -330,6 +332,115 @@ async function submitGuess(chatId, ctx, senderNumber, rawWord) {
     return true
 }
 
+// ─── Lobby open + countdown (engine-owned, see file header) ────
+// Previously this lived inline in publicCommands.js (direct
+// gameState mutation + its own setInterval), while HangmanGame
+// routed the equivalent through gameEngine.openFreshLobby(). Two
+// different architectural layers for the same job under the same
+// folder-naming convention — moved here so WCL matches Hangman's
+// contract: publicCommands.js stays a thin glue layer, the engine
+// owns lobby state + timers + messaging, same as it already owns
+// the turn flow above.
+async function openFreshLobby(chatId, ctx) {
+    const { sock, games, settings, nameCache, activeGameChatRef, persistGames } = ctx
+    const gameState = getGameState(chatId, games)
+
+    gameState.players = []
+    gameState.playerNames = {}
+    gameState.playerJids = {}
+    gameState.lobbyActive = true
+    gameState.lobbySecondsLeft = config.LOBBY_SECONDS
+
+    // Auto-join — same bot-wide "autoJoin" setting Hangman reads,
+    // now reachable via "/game set autojoin" from any active game.
+    const creatorEnvJid   = process.env.CREATOR_JID || ''
+    const creatorNum      = creatorEnvJid ? creatorEnvJid.split('@')[0].split(':')[0] : ''
+    const creatorAutoJoin = settings.creatorOverrides?.autoJoin !== false
+    const adminAutoJoin   = settings.autoJoin !== false
+
+    if (creatorNum && creatorAutoJoin) {
+        gameState.players.push(creatorNum)
+        gameState.playerNames[creatorNum] = (nameCache && nameCache[creatorNum]) || 'Creator'
+        gameState.playerJids[creatorNum]  = creatorEnvJid
+    }
+    if (settings.adminNumber && settings.adminNumber !== creatorNum && adminAutoJoin) {
+        gameState.players.push(settings.adminNumber)
+        gameState.playerNames[settings.adminNumber] = (nameCache && nameCache[settings.adminNumber]) || 'Admin'
+        gameState.playerJids[settings.adminNumber]  = settings.adminJid || `${settings.adminNumber}@s.whatsapp.net`
+    }
+
+    activeGameChatRef.value = chatId
+    persistGames()
+
+    const autoJoinMentions = gameState.players.map(num => gameState.playerJids[num])
+    const autoJoinText = gameState.players.length > 0
+        ? gameState.players.map((num, i) => `${i + 1}. ${nameTag(num, gameState.playerNames, settings)} — Auto-joined 👑`).join('\n')
+        : '[No one yet — be first! 🎯]'
+
+    await sock.sendMessage(chatId, {
+        text:
+            `${config.DIVIDER}\n` +
+            `${config.BOT_EMOJI} *${config.GAME_NAME} is Starting!*\n` +
+            `${config.DIVIDER}\n\n` +
+            `The climb begins at *${config.MIN_LENGTH} letters* and tops out at *${config.MAX_LENGTH}*.\n\n` +
+            `You have *${config.LOBBY_SECONDS} seconds* to join! ⏱️\n\n` +
+            `👥 *Current Lobby:*\n${autoJoinText}\n\n` +
+            `*Commands:*\n` +
+            `*${config.PREFIX} join* — Enter the lobby\n` +
+            `_(an admin can start early with \`${config.ADMIN_PREFIX.trim()} begin\`)_\n\n` +
+            `_Type *${config.PREFIX} join* now!_ 🔥`,
+        mentions: autoJoinMentions
+    })
+
+    startLobbyCountdown(chatId, ctx)
+}
+
+function startLobbyCountdown(chatId, ctx) {
+    const { sock, games, settings, persistGames } = ctx
+    const gameState = getGameState(chatId, games)
+
+    if (gameState.lobbyTimer) clearInterval(gameState.lobbyTimer)
+    gameState.lobbyTimer = setInterval(async () => {
+        if (!gameState.lobbyActive) {
+            clearInterval(gameState.lobbyTimer)
+            return
+        }
+        gameState.lobbySecondsLeft--
+        if (gameState.lobbySecondsLeft <= 0) {
+            clearInterval(gameState.lobbyTimer)
+            await closeLobbyAndStart(chatId, ctx)
+        } else if (gameState.lobbySecondsLeft % 10 === 0) {
+            const lobbyText = gameState.players
+                .map((num, i) => `${i + 1}. ${nameTag(num, gameState.playerNames, settings)}`)
+                .join('\n')
+            await sock.sendMessage(chatId, {
+                text:
+                    `⏱️ *${gameState.lobbySecondsLeft}s* left to join *${config.GAME_NAME}*!\n\n` +
+                    `👥 *Lobby:*\n${lobbyText || '[No one yet — be first! 🎯]'}`
+            })
+        }
+        persistGames()
+    }, 1000)
+}
+
+async function closeLobbyAndStart(chatId, ctx) {
+    const { sock, games } = ctx
+    const gameState = getGameState(chatId, games)
+
+    if (gameState.players.length < 2) {
+        gameState.lobbyActive = false
+        ctx.activeGameChatRef.value = null
+        await sock.sendMessage(chatId, {
+            text: `⚠️ Not enough players joined — *${config.GAME_NAME}* lobby closed without a climb.`
+        })
+        return
+    }
+    await sock.sendMessage(chatId, {
+        text: `🚀 *Lobby closed — the climb begins!* ${gameState.players.length} climber${gameState.players.length === 1 ? '' : 's'} ready.`
+    })
+    await startClimb(chatId, ctx)
+}
+
 // ─── Starting the climb (called once the lobby closes) ─────────
 async function startClimb(chatId, ctx) {
     const { games, persistGames } = ctx
@@ -359,6 +470,30 @@ async function startClimb(chatId, ctx) {
     await announceAndArm(chatId, ctx, first)
 }
 
+// ─── Pause / resume (kernel-parity feature — see MEMORY.md rule 5:
+// game-agnostic admin needs that were only ever built once, inside
+// Hangman). WCL's turn timer is a setTimeout, not Hangman's
+// self-clearing setInterval, so pause clears the pending timeout
+// outright; resume re-arms a fresh full-length timer rather than
+// trying to recover an exact remaining count — simplest correct
+// behavior, and the resume message says so.
+function pauseSession(chatId, ctx) {
+    const { games } = ctx
+    const gameState = getGameState(chatId, games)
+    return kernel.pauseTimer(gameState, gameState.turnTimer, clearTimeout)
+}
+
+function resumeSession(chatId, ctx) {
+    const { games, settings, persistGames } = ctx
+    const gameState = getGameState(chatId, games)
+    const seconds = turnSeconds(settings)
+    const resumed = kernel.resumeTimer(gameState, () => {
+        gameState.turnTimer = setTimeout(() => handleTimeout(chatId, ctx), seconds * 1000)
+    })
+    if (resumed && typeof persistGames === 'function') persistGames()
+    return resumed
+}
+
 function forceStopActiveSession(chatId, ctx) {
     const { games, persistGames } = ctx
     const gameState = getGameState(chatId, games)
@@ -380,7 +515,11 @@ module.exports = {
     clearTimers,
     jidFor,
     tagFor,
+    openFreshLobby,
+    closeLobbyAndStart,
     startClimb,
     submitGuess,
+    pauseSession,
+    resumeSession,
     forceStopActiveSession
 }

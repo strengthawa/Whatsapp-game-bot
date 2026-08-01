@@ -1,5 +1,5 @@
 // ============================================================
-//  HangmanGame/config.js — HMG Bot · Sky Graphics
+//  HangmanGame/config.js — Hangman · Sky Graphics
 //  Single source of truth for this game's identity + prefixes.
 //  Change these once here — every other file imports from this
 //  module instead of hardcoding strings.
@@ -23,6 +23,12 @@ module.exports = {
 
     // ── Timers ───────────────────────────────────────────────
     LOBBY_SECONDS:        60,
+
+    // Minimum players in the lobby before an admin can force-start early
+    // with "/hmg begin" — see adminCommands.js. Matches Word Climb's
+    // MIN_PLAYERS_TO_BEGIN convention; Hangman has no floor beyond "at
+    // least one," same as before this was made an explicit config value.
+    MIN_PLAYERS_TO_BEGIN: 1,
     TURN_SECONDS:         30,
     COOLDOWN_SECONDS:     120,  // 2-minute post-round discussion window
     COOLDOWN_WARNING_AT:  30,   // send "starting soon" ping at T-30s

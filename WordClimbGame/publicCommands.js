@@ -1,5 +1,5 @@
 // ============================================================
-//  WordClimbGame/publicCommands.js — WCL Bot · Sky Graphics
+//  WordClimbGame/publicCommands.js — Word Climb · Sky Graphics
 //  Handles all PUBLIC (non-admin) message flow for this game:
 //    !wcl            — explainer card (never stateful — see
 //                       ARCHITECTURE.md §9, bare-acronym rule)
@@ -9,12 +9,16 @@
 //    live word guesses while a round is active (no prefix needed,
 //    same convention as HangmanGame's letter/word guesses)
 //
+//  Force-starting an open lobby early ("begin") is admin-only —
+//  see "/wcl begin" in adminCommands.js, not a public command here.
+//
 //  Admin "/" commands live in adminCommands.js. Turn-timer +
 //  scoring mechanics live in gameEngine.js — this file is the
 //  glue between an inbound WhatsApp message and that engine.
 // ============================================================
 
 const { nameTag, resolveSetting } = require('../permissions')
+const kernel = require('../gameKernel')
 const config = require('./config')
 const engine = require('./gameEngine')
 
@@ -27,6 +31,7 @@ function resolveJid(number, playerJids) {
 const HELP_TEXT =
     `${config.DIVIDER}\n` +
     `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM}) Bot*\n` +
+    `🤖 ${kernel.botIdentityLine()}\n` +
     `${config.DIVIDER}\n` +
     `A live elimination word game — the required word length climbs a rung ` +
     `every lap, from *${config.MIN_LENGTH} letters* all the way to *${config.MAX_LENGTH}*.\n\n` +
@@ -36,7 +41,9 @@ const HELP_TEXT =
     `3️⃣ On your turn, the bot gives you a starting *letter* + required *length* — reply with a real word matching both\n` +
     `4️⃣ You have *${config.TURN_SECONDS} seconds*. Timeout, wrong word, or a repeat = a strike\n` +
     `5️⃣ *${config.MAX_STRIKES} strikes* and you're eliminated 🚫\n` +
-    `6️⃣ Last climber standing wins — or if everyone survives to the top, the *longest word reached* wins 🏆`
+    `6️⃣ Last climber standing wins — or if everyone survives to the top, the *longest word reached* wins 🏆\n\n` +
+    `${config.DIVIDER}\n` +
+    `_Sky Graphics — ${config.GAME_NAME}_`
 
 async function handlePublicMessage(msgCtx) {
     const {
@@ -90,50 +97,7 @@ async function handlePublicMessage(msgCtx) {
             return true
         }
 
-        gameState.players = []
-        gameState.playerNames = {}
-        gameState.playerJids = {}
-        gameState.lobbyActive = true
-        gameState.lobbySecondsLeft = config.LOBBY_SECONDS
-        activeGameChatRef.value = from
-        persistGames()
-
-        await sock.sendMessage(from, {
-            text:
-                `${config.DIVIDER}\n` +
-                `${config.BOT_EMOJI} *${config.GAME_NAME} is Starting!*\n` +
-                `${config.DIVIDER}\n\n` +
-                `The climb begins at *${config.MIN_LENGTH} letters* and tops out at *${config.MAX_LENGTH}*.\n\n` +
-                `You have *${config.LOBBY_SECONDS} seconds* to join! ⏱️\n\n` +
-                `*Commands:*\n` +
-                `*${config.PREFIX} join* — Enter the lobby\n` +
-                `*${config.PREFIX} begin* — Start early once 2+ have joined\n\n` +
-                `_Type *${config.PREFIX} join* now!_ 🔥`
-        })
-
-        if (gameState.lobbyTimer) clearInterval(gameState.lobbyTimer)
-        gameState.lobbyTimer = setInterval(async () => {
-            if (!gameState.lobbyActive) {
-                clearInterval(gameState.lobbyTimer)
-                return
-            }
-            gameState.lobbySecondsLeft--
-            if (gameState.lobbySecondsLeft <= 0) {
-                clearInterval(gameState.lobbyTimer)
-                await closeLobbyAndStart(from, ctx, gameState)
-            } else if (gameState.lobbySecondsLeft % 10 === 0) {
-                const lobbyText = gameState.players
-                    .map((num, i) => `${i + 1}. ${nameTag(num, gameState.playerNames, settings)}`)
-                    .join('\n')
-                await sock.sendMessage(from, {
-                    text:
-                        `⏱️ *${gameState.lobbySecondsLeft}s* left to join *${config.GAME_NAME}*!\n\n` +
-                        `👥 *Lobby:*\n${lobbyText || '[No one yet — be first! 🎯]'}`
-                })
-            }
-            persistGames()
-        }, 1000)
-
+        await engine.openFreshLobby(from, ctx)
         return true
     }
 
@@ -162,41 +126,15 @@ async function handlePublicMessage(msgCtx) {
         return true
     }
 
-    if (subCmd === 'begin') {
-        if (!gameState.lobbyActive) {
-            await sock.sendMessage(from, { text: `⚠️ No active lobby! Type *${config.PREFIX} start* to open one. 🎮` })
-            return true
-        }
-        if (gameState.players.length < 2) {
-            await sock.sendMessage(from, { text: `⚠️ Need at least *2 players* to start the climb.` })
-            return true
-        }
-        if (gameState.players.includes(senderNumber) || isAdmin) {
-            if (gameState.lobbyTimer) clearInterval(gameState.lobbyTimer)
-            await closeLobbyAndStart(from, ctx, gameState)
-        }
-        return true
-    }
+    // "begin" (force-start the open lobby early) moved to the admin-only
+    // "/wcl begin" — see adminCommands.js. It used to be self-service for
+    // any joined player once 2+ had joined; that's now an admin call, and
+    // the floor is config.MIN_PLAYERS_TO_BEGIN (currently 1) instead of a
+    // hardcoded 2.
 
     // Unrecognised !wcl subcommand — still "handled" (silently ignored),
     // same convention as HangmanGame.
     return true
-}
-
-async function closeLobbyAndStart(chatId, ctx, gameState) {
-    const { sock, settings } = ctx
-    if (gameState.players.length < 2) {
-        gameState.lobbyActive = false
-        ctx.activeGameChatRef.value = null
-        await sock.sendMessage(chatId, {
-            text: `⚠️ Not enough players joined — *${config.GAME_NAME}* lobby closed without a climb.`
-        })
-        return
-    }
-    await sock.sendMessage(chatId, {
-        text: `🚀 *Lobby closed — the climb begins!* ${gameState.players.length} climbers ready.`
-    })
-    await engine.startClimb(chatId, ctx)
 }
 
 module.exports = { handlePublicMessage }

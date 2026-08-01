@@ -1,5 +1,5 @@
 // ============================================================
-//  permissions.js — HMG Bot · Sky Graphics
+//  permissions.js — Game Bots · Sky Graphics
 //  Single source of truth for all role/tier logic.
 //  Game-agnostic — imported by index.js and every game module's
 //  adminCommands.js. Never import a game module from here (no
@@ -103,6 +103,43 @@ function writeSetting(tier, key, value, settings) {
     }
 }
 
+// ─── Game-access scope (list model) ────────────────────────────
+/**
+ * settings.adminGameAccess is one of:
+ *   - undefined / 'all'  → every game
+ *   - an array of gamekeys, e.g. ['hangman', 'wordclimb']
+ * A bare gamekey string is also accepted for backward compatibility
+ * with data written before the list model (treated as a 1-item list).
+ *
+ * @returns {boolean} true if the current admin may operate `gamekey`
+ */
+function hasGameAccess(gamekey, settings) {
+    const scope = settings && settings.adminGameAccess
+    if (!scope || scope === 'all') return true
+    if (Array.isArray(scope)) return scope.includes(gamekey)
+    return scope === gamekey // legacy single-string value
+}
+
+/**
+ * Normalizes whatever is currently stored into an array, so callers
+ * that need to add/remove a single key never have to branch on the
+ * legacy string shape themselves.
+ */
+function gameAccessList(settings) {
+    const scope = settings && settings.adminGameAccess
+    if (!scope || scope === 'all') return []
+    if (Array.isArray(scope)) return [...scope]
+    return [scope]
+}
+
+/** Human-readable summary for dashboards/status replies. */
+function describeGameAccess(settings) {
+    const scope = settings && settings.adminGameAccess
+    if (!scope || scope === 'all') return 'ALL games'
+    if (Array.isArray(scope)) return scope.length ? scope.join(', ') : 'not stationed on a game yet'
+    return scope
+}
+
 // ─── Name-only tag helper ─────────────────────────────────────
 /**
  * Returns a display tag using the person's name + role badge if applicable.
@@ -141,5 +178,8 @@ module.exports = {
     isPublic,
     resolveSetting,
     writeSetting,
-    nameTag
+    nameTag,
+    hasGameAccess,
+    gameAccessList,
+    describeGameAccess
 }

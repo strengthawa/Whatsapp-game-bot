@@ -1,5 +1,5 @@
 // ============================================================
-//  game-switch-commands.js — HMG Bot · Sky Graphics
+//  game-switch-commands.js — Game Bots · Sky Graphics
 //  Shared, game-agnostic CREATOR-ONLY commands, called ONLY from
 //  index.js under the fixed "/game" prefix — never from inside any
 //  individual game's adminCommands.js. This is deliberate: the whole
@@ -7,9 +7,14 @@
 //  own acronym/prefix. "/game" always works, no matter what's active.
 //
 //    /game setgame [key]         — switch which game is currently active
-//    /game setadminaccess [key|all] — scope which game(s) the admin may operate
+//    /game set public|start|autojoin [on|off] — bot-wide toggles, govern
+//                                    whichever game is active
 //    /game status                 — show what's active + what's available
 //    /game roletags on|off        — bot-wide (Creator)/(Admin) name tag toggle
+//
+//  Station assignment ("which game(s) can the admin operate") is NOT
+//  handled here — that's identity, not configuration, and lives
+//  entirely in admin-onboarding.js as /admin set / /admin clear.
 //
 //  "setgame" also attempts a clean hand-off (ARCHITECTURE.md §10): if the
 //  previous game has a live session in the shared activeGameChatRef chat
@@ -24,6 +29,7 @@
 // ============================================================
 
 const registry = require('./games-registry')
+const { TIERS, writeSetting, resolveSetting, describeGameAccess } = require('./permissions')
 
 async function handleGameSwitchCommands(ctx) {
     const {
@@ -32,7 +38,47 @@ async function handleGameSwitchCommands(ctx) {
     } = ctx
     // ctx.senderIsAdmin is read directly (not destructured above) only by
     // the status branch below — kept optional so existing callers that
-    // don't pass it still work fine for setgame/setadminaccess.
+    // don't pass it still work fine for setgame/status/roletags.
+
+    const senderIsAdmin = senderIsCreator || ctx.senderIsAdmin
+    const senderTier    = senderIsCreator ? TIERS.CREATOR : TIERS.ADMIN
+
+    // ── set public/start/autojoin [on/off] — bot-wide toggles ──
+    // These used to live only inside HangmanGame/adminCommands.js
+    // (as "/hmg set public" etc). That broke MEMORY.md rule 2 in
+    // exactly the way it warns about: the setting governs whichever
+    // game is active, but was only reachable while Hangman itself
+    // was the active game — an admin running WordClimb had no way
+    // to toggle it at all. Moved here, same writeSetting/creator-
+    // override semantics, same admin-or-creator access as before.
+    if (cmd[0] === 'set' && (cmd[1] === 'public' || cmd[1] === 'start' || cmd[1] === 'autojoin')) {
+        if (!senderIsAdmin) return false
+
+        const key = cmd[1] === 'public' ? 'publicVisible' : cmd[1] === 'start' ? 'publicCanStart' : 'autoJoin'
+        const mode = (cmd[2] || '').toLowerCase()
+
+        if (mode !== 'on' && mode !== 'off') {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ Usage: \`/game set ${cmd[1]} [on/off]\`` })
+            return true
+        }
+
+        const newValue = (mode === 'on')
+        writeSetting(senderTier, key, newValue, settings)
+        saveSettings()
+
+        const labels = {
+            publicVisible:  newValue ? `🔓 *Public Visibility: ON*\nNon-admins can interact with the bot. 👥`
+                                      : `🔒 *Public Visibility: OFF*\nNon-admins are completely silenced. 🤐`,
+            publicCanStart: newValue ? `🔓 *Public Game Starts: ON*\nAnyone can open a lobby in the active game. 🎮`
+                                      : `🔒 *Public Game Starts: OFF*\nOnly admin can open a lobby. 👑`,
+            autoJoin:       newValue ? `🟢 *Auto-Join: ON*\nCreator/Admin auto-join every lobby that opens. 🎮`
+                                      : `🔴 *Auto-Join: OFF*\nCreator/Admin must \`join\` lobbies manually. 👋`
+        }
+        await sendSafeMessage(sock, replyTo, {
+            text: labels[key] + `\n\n_Applies bot-wide — to whichever game is currently active._`
+        })
+        return true
+    }
 
     // ── setgame [key] ───────────────────────────────────────
     if (cmd[0] === 'setgame') {
@@ -94,42 +140,11 @@ async function handleGameSwitchCommands(ctx) {
         return true
     }
 
-    // ── setadminaccess [key|all] ────────────────────────────
-    if (cmd[0] === 'setadminaccess') {
-        if (!senderIsCreator) return false
-
-        const target = (cmd[1] || '').toLowerCase()
-
-        if (target === 'all') {
-            settings.adminGameAccess = 'all'
-            saveSettings()
-            await sendSafeMessage(sock, replyTo, {
-                text: `✅ Admin access scope: *ALL games*. The admin may operate whichever game is active.`
-            })
-            return true
-        }
-
-        const game = registry.getGame(target)
-        if (!game) {
-            const available = registry.listGameKeys().join(', ') || 'none loaded'
-            await sendSafeMessage(sock, replyTo, {
-                text:
-                    `⚠️ Unknown game \`${target || '(none given)'}\`.\n` +
-                    `Available: *${available}*, or \`all\`.\n` +
-                    `Usage: \`setadminaccess [key|all]\``
-            })
-            return true
-        }
-
-        settings.adminGameAccess = game.config.GAME_KEY
-        saveSettings()
-        await sendSafeMessage(sock, replyTo, {
-            text:
-                `✅ Admin access scoped to *${game.config.GAME_NAME}* only.\n` +
-                `The admin's commands will be silently ignored while any other game is active, until you change this again.`
-        })
-        return true
-    }
+    // "setadminaccess" removed — it was a second, differently-behaved
+    // path (direct replace) to the same thing /admin set/clear already
+    // do (additive/subtractive). Station assignment now happens in
+    // exactly one place: /admin set [num] [gamekey|all] to add,
+    // /admin clear [gamekey|all] to remove. See admin-onboarding.js.
 
     // ── status — show active game + admin scope + available games ──
     // Visible to admin tier and above (not senderIsCreator-only — the
@@ -141,7 +156,7 @@ async function handleGameSwitchCommands(ctx) {
             text:
                 `🎮 *Game Status*\n\n` +
                 `Active: *${active ? `${active.config.GAME_NAME} (${active.config.GAME_ACRONYM})` : 'none loaded'}*\n` +
-                `Admin scope: *${settings.adminGameAccess === 'all' ? 'ALL games' : settings.adminGameAccess}*\n` +
+                `Admin stationed on: *${describeGameAccess(settings)}*\n` +
                 `Available: *${registry.listGameKeys().join(', ') || 'none loaded'}*`
         })
         return true

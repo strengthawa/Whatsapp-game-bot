@@ -1,5 +1,5 @@
 // ============================================================
-//  RoastGame/roastData.js — Sky Graphics
+//  RoastGame/roastData.js — Roast Game · Sky Graphics
 //
 //  Curated ONCE, offline, by hand — reading the ACT Academy chat
 //  export directly and writing floor + variation text per person.

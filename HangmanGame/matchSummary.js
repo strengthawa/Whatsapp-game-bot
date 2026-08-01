@@ -1,4 +1,4 @@
-// HangmanGame/matchSummary.js — HMG Bot · Sky Graphics
+// HangmanGame/matchSummary.js — Hangman · Sky Graphics
 //
 // Standalone match-summary / disqualification module.
 // Pure bookkeeping + message formatting — never owns game state.
@@ -51,10 +51,15 @@ function checkLastPlayerStanding(gameState) {
 }
 
 /**
- * Builds and sends the full match report.
+ * Builds the full match report as a plain {text, mentions} object.
+ * Never sends — the caller (publicCommands.js) owns sock.sendMessage,
+ * same contract as WordClimbGame/matchSummary.js's buildFinalBoard().
+ * This used to send directly (sendMatchReport), which meant the two
+ * games' matchSummary modules had opposite contracts under the same
+ * filename — a trap for anyone copying the pattern into game #4.
  * @param {function} tag — tag(number) → display string with role badge
  */
-async function sendMatchReport(sock, chatId, gameState, outcome, tag) {
+function buildMatchReport(gameState, outcome, tag) {
     const disqualified = gameState.disqualified || []
 
     const survivorEntries = gameState.players.map(number => ({
@@ -121,7 +126,7 @@ async function sendMatchReport(sock, chatId, gameState, outcome, tag) {
         `Disqualified: ${totalDisqualified}\n` +
         `Winner: ${winnerNumber ? 1 : 0}\n\n` +
         `${config.DIVIDER}\n` +
-        `_${config.GAME_ACRONYM} Bot · Sky Graphics_ 🎨`
+        `_Sky Graphics — ${config.GAME_NAME}_`
 
     const mentionSet = new Set()
     for (const p of allParticipants) {
@@ -133,7 +138,7 @@ async function sendMatchReport(sock, chatId, gameState, outcome, tag) {
         mentionSet.add(winnerJid)
     }
 
-    await sock.sendMessage(chatId, { text: report, mentions: [...mentionSet] })
+    return { text: report, mentions: [...mentionSet] }
 }
 
-module.exports = { DQ_REASONS, recordDisqualification, checkLastPlayerStanding, sendMatchReport }
+module.exports = { DQ_REASONS, recordDisqualification, checkLastPlayerStanding, buildMatchReport }

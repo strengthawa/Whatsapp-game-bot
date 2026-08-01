@@ -1,5 +1,5 @@
 // ============================================================
-//  RoastGame/gameEngine.js — Sky Graphics
+//  RoastGame/gameEngine.js — Roast Game · Sky Graphics
 //
 //  Roast has no live session/round — no lobby, no timer, no
 //  win/loss state — so this file is intentionally thin. It still

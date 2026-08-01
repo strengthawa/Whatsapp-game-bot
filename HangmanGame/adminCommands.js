@@ -1,5 +1,5 @@
 // ============================================================
-//  HangmanGame/adminCommands.js — HMG Bot · Sky Graphics
+//  HangmanGame/adminCommands.js — Hangman · Sky Graphics
 //  Handles ALL "/hmg" commands with full security hardening.
 //
 //  Access tiers:
@@ -11,12 +11,14 @@
 //  Admin identity onboarding (/admin, /admin approve, /admin deny) is
 //  NOT handled here anymore — see admin-onboarding.js at the project
 //  root. It's a fixed, game-independent prefix, same as "/game ...".
-//  Game switching (/game setgame, /game setadminaccess) is NOT handled
-//  in this file either — also a fixed, game-independent prefix.
+//  Game switching (/game setgame) is NOT handled in this file either
+//  — also a fixed, game-independent prefix. Station assignment (which
+//  game(s) an admin can operate) lives exclusively under /admin set /
+//  /admin clear — never under /game.
 // ============================================================
 
-const { TIERS, writeSetting, resolveSetting, nameTag } = require('../permissions')
-const { startActualGame, openFreshLobby } = require('./gameEngine')
+const { TIERS, writeSetting, resolveSetting, nameTag, hasGameAccess } = require('../permissions')
+const { startActualGame, openFreshLobby, pauseSession, resumeSession } = require('./gameEngine')
 const config = require('./config')
 
 
@@ -40,7 +42,7 @@ function buildHelpText(settings, forCreator = false, section = null) {
 
     const footer =
         `${config.DIVIDER}\n` +
-        `_${config.GAME_ACRONYM} Bot · Sky Graphics_ 🎨`
+        `_Sky Graphics — ${config.GAME_NAME}_`
 
     const liveConfig =
         `*📊 Live Config:*\n` +
@@ -71,13 +73,10 @@ function buildHelpText(settings, forCreator = false, section = null) {
         return (
             header +
             `*1️⃣  Settings Commands*\n\n` +
-            `› \`/hmg set admin [number]\`\n` +
-            `  then → \`/hmg confirm\` or \`/hmg cancel\`\n` +
-            `› \`/hmg set public [on/off]\` — non-admin visibility\n` +
-            `› \`/hmg set start [on/off]\` — public lobby start\n` +
-            `› \`/hmg set autojoin [on/off]\` — auto-join lobbies\n` +
+            `› Manage who's admin → \`/admin\`\n` +
+            `› Public visibility/start/auto-join → \`/game set ...\` (bot-wide)\n` +
             `› \`/hmg set maxtries [n / auto]\` — attempt budget\n` +
-            `› \`/hmg clearadmin\` — clear admin slot, keep pools\n` +
+            `› \`/hmg resetsettings\` — reset max tries to default\n` +
             (forCreator ? `› \`/hmg reset\` — ⚠️ wipe ALL data\n` : ``) +
             `\n` +
             `_Note: there's no manual difficulty setting anymore — word length adapts automatically based on how the group performs each round._\n\n` +
@@ -105,7 +104,8 @@ function buildHelpText(settings, forCreator = false, section = null) {
             header +
             `*3️⃣  Game Control Commands*\n\n` +
             `› \`/hmg status\` — live game state in your DM\n` +
-            `› \`/hmg start\` — force lobby to start immediately\n` +
+            `› \`/hmg begin\` — force the open lobby to start now (min *${config.MIN_PLAYERS_TO_BEGIN}* player${config.MIN_PLAYERS_TO_BEGIN === 1 ? '' : 's'})\n` +
+            `› \`/hmg skipcooldown\` — break the post-round cooldown, open a fresh lobby\n` +
             `› \`/hmg pause\` — freeze the turn timer\n` +
             `› \`/hmg resume\` — unfreeze the turn timer\n` +
             `› \`/hmg end\` · \`/hmg stop\` — terminate active game\n` +
@@ -114,7 +114,7 @@ function buildHelpText(settings, forCreator = false, section = null) {
                   `› \`/admin approve [number]\` — send access key to requester\n` +
                   `› \`/admin deny [number]\` — void their key immediately\n` +
                   `› \`/game setgame [key]\` — switch the active game (fixed prefix, works from any game)\n` +
-                  `› \`/game setadminaccess [key|all]\` — scope the admin to one game\n`
+                  `› \`/admin set [number] [key|all]\` — station an admin on a game\n`
                 : ``) +
             `\n` +
             footer
@@ -148,7 +148,12 @@ async function handleAdminCommand(ctx) {
     const creatorNumber = creatorJid.split('@')[0].split(':')[0]
 
     const senderIsCreator = senderTier === TIERS.CREATOR
-    const isAdmin          = senderTier === TIERS.CREATOR || senderTier === TIERS.ADMIN
+    // Scope check folded directly into isAdmin (not applied further down,
+    // after help already replied) — a scoped-out admin gets the exact same
+    // total silence as any other non-permitted tier, on every command
+    // including `help`. The creator always bypasses scoping.
+    const isScopedIn       = senderIsCreator || hasGameAccess(config.GAME_KEY, settings)
+    const isAdmin          = (senderTier === TIERS.CREATOR || senderTier === TIERS.ADMIN) && isScopedIn
     const tier              = senderTier || TIERS.PUBLIC
 
     // Strip "/" and shift past "hmg" so cmd[0] = command, cmd[1]+ = args
@@ -210,14 +215,6 @@ async function handleAdminCommand(ctx) {
     // ══════════════════════════════════════════════
     if (!senderIsCreator && !isAdmin) return
 
-    // ── Admin access scoping: a non-creator admin who has been scoped
-    // to a different game via /game setadminaccess is silently ignored
-    // on Hangman commands. The creator always bypasses this.
-    if (!senderIsCreator) {
-        const scope = settings.adminGameAccess || 'all'
-        if (scope !== 'all' && scope !== config.GAME_KEY) return
-    }
-
     const replyTo = senderJid
 
     // ─── /hmg set admin / confirm / cancel — redirect only ──
@@ -258,58 +255,18 @@ async function handleAdminCommand(ctx) {
         return
     }
 
-    // ─── /hmg set public ─────────────────────────
-    if (cmd[0] === 'set' && cmd[1] === 'public') {
-        const mode = cmd[2]
-        if (mode === 'on' || mode === 'off') {
-            const newValue = (mode === 'on')
-            writeSetting(tier, 'publicVisible', newValue, settings)
-            saveSettings()
-            await sendSafeMessage(sock, replyTo, {
-                text: newValue
-                    ? `🔓 *Public Visibility: ON*\nNon-admins can interact with the bot. 👥`
-                    : `🔒 *Public Visibility: OFF*\nNon-admins are completely silenced. 🤐`
-            })
-        } else {
-            await sendSafeMessage(sock, replyTo, { text: `⚠️ Usage: \`/hmg set public [on/off]\`` })
-        }
-        return
-    }
-
-    // ─── /hmg set start ──────────────────────────
-    if (cmd[0] === 'set' && cmd[1] === 'start') {
-        const mode = cmd[2]
-        if (mode === 'on' || mode === 'off') {
-            const newValue = (mode === 'on')
-            writeSetting(tier, 'publicCanStart', newValue, settings)
-            saveSettings()
-            await sendSafeMessage(sock, replyTo, {
-                text: newValue
-                    ? `🔓 *Public Game Starts: ON*\nAnyone can type *${config.PREFIX} start* to open a lobby. 🎮`
-                    : `🔒 *Public Game Starts: OFF*\nOnly admin can open a lobby. 👑`
-            })
-        } else {
-            await sendSafeMessage(sock, replyTo, { text: `⚠️ Usage: \`/hmg set start [on/off]\`` })
-        }
-        return
-    }
-
-    // ─── /hmg set autojoin ────────────────────────
-    if (cmd[0] === 'set' && cmd[1] === 'autojoin') {
-        const mode = cmd[2]
-        if (mode === 'on' || mode === 'off') {
-            const newValue = (mode === 'on')
-            writeSetting(tier, 'autoJoin', newValue, settings)
-            saveSettings()
-            const roleLabel = senderIsCreator ? 'Creator' : 'Admin'
-            await sendSafeMessage(sock, replyTo, {
-                text: newValue
-                    ? `🟢 *Auto-Join: ON*\nYou (${roleLabel}) will automatically join every lobby when it opens. 🎮`
-                    : `🔴 *Auto-Join: OFF*\nYou (${roleLabel}) must type *${config.PREFIX} join* to enter lobbies manually. 👋`
-            })
-        } else {
-            await sendSafeMessage(sock, replyTo, { text: `⚠️ Usage: \`/hmg set autojoin [on/off]\`` })
-        }
+    // ─── /hmg set public / start / autojoin — moved bot-wide ──
+    // These now live at "/game set public|start|autojoin [on/off]"
+    // (game-switch-commands.js) since they govern whichever game is
+    // active, not just Hangman — see that file's header comment for
+    // why. Redirect only, same pattern as the /hmg set admin redirect
+    // above.
+    if (cmd[0] === 'set' && (cmd[1] === 'public' || cmd[1] === 'start' || cmd[1] === 'autojoin')) {
+        await sendSafeMessage(sock, replyTo, {
+            text:
+                `ℹ️ This setting moved to a fixed, game-independent command.\n\n` +
+                `Use *\`/game set ${cmd[1]} [on/off]\`* instead of *\`/hmg set ${cmd[1]}\`*.`
+        })
         return
     }
 
@@ -388,23 +345,30 @@ async function handleAdminCommand(ctx) {
         return
     }
 
-    // ─── /hmg clearadmin ─────────────────────────
+    // ─── /hmg resetsettings ───────────────────────
     // NOTE: this now only resets HANGMAN'S OWN admin-layer settings
     // (max tries, public access, etc). Clearing the admin IDENTITY
     // itself (settings.adminNumber/adminJid) moved to the universal
     // "/admin clear" — same reasoning as "/admin set": who the admin
     // is isn't Hangman's to decide, so it shouldn't be Hangman's to
     // un-decide either.
-    if (cmd[0] === 'clearadmin') {
-        settings.maxTries       = 'auto'
-        settings.publicVisible  = true
-        settings.publicCanStart = false
-        settings.autoJoin       = true
+    // Resets ONLY this game's own tunable setting (maxTries). Renamed
+    // from "clearadmin" — that name implied it touched admin identity,
+    // which it never did, and it used to also reset publicVisible/
+    // publicCanStart/autoJoin, which are bot-wide values now owned by
+    // /game set (see game-switch-commands.js) — a per-game command has
+    // no business touching those anymore. "resetsettings" is the
+    // convention every future game should use for its own equivalent
+    // (e.g. Word Climb's turn-seconds default) — same name, same shape.
+    if (cmd[0] === 'resetsettings') {
+        settings.maxTries = 'auto'
         saveSettings()
         await sendSafeMessage(sock, replyTo, {
             text:
-                `✅ *Hangman's admin-layer settings reset to defaults* (max tries, public access, auto-join).\n\n` +
-                `This did *not* remove the admin identity — use */admin clear* for that.`
+                `✅ *Hangman's own settings reset to default* (max tries: auto).\n\n` +
+                `Bot-wide settings (public visibility, who can start, auto-join) live at ` +
+                `\`/game set ...\` now — this command never touches those. ` +
+                `Admin identity is untouched — use */admin clear* for that.`
         })
         return
     }
@@ -413,10 +377,11 @@ async function handleAdminCommand(ctx) {
     if (cmd[0] === 'reset') {
         const keepAdminNumber = settings.adminNumber
         const keepAdminJid    = settings.adminJid
-        Object.assign(settings, {
-            maxTries: 'auto',
-            publicVisible: true, publicCanStart: false
-        })
+        // Only Hangman's own setting resets here — publicVisible/
+        // publicCanStart/autoJoin are bot-wide now (/game set ...) and
+        // this command has no business touching them (see
+        // "resetsettings" above for the full reasoning).
+        settings.maxTries = 'auto'
         delete settings.creatorOverrides
         settings.adminNumber = keepAdminNumber
         settings.adminJid    = keepAdminJid
@@ -443,9 +408,9 @@ async function handleAdminCommand(ctx) {
         await sendSafeMessage(sock, replyTo, {
             text:
                 `🔄 *Reset Complete* ✅\n\n` +
-                `Settings, creator overrides, and the word pool were restored to defaults. Any active game was ended.\n\n` +
+                `Hangman's own settings, creator overrides, and the word pool were restored to defaults. Any active game was ended.\n\n` +
                 (keepAdminNumber
-                    ? `👑 Admin (\`${keepAdminNumber}\`) keeps their access — use */hmg clearadmin* if you want to remove them too.`
+                    ? `👑 Admin (\`${keepAdminNumber}\`) keeps their access — use */admin clear* if you want to remove them too.`
                     : `The bot has no admin set — the next */admin* request will begin onboarding.`)
         })
         return
@@ -506,38 +471,68 @@ async function handleAdminCommand(ctx) {
     // ─── Game control commands ────────────────────
     const activeGameChat = activeGameChatRef.value
 
-    if (cmd[0] === 'start') {
+    // ─── /hmg begin — force-start the open lobby early ───────────
+    // Same name, same tier, same shape as "/wcl begin" — this used to
+    // be folded into "/hmg start" along with an unrelated cooldown-skip
+    // behavior, which meant the one command did three different things
+    // depending on invisible state. Split so "begin" means exactly one
+    // thing in every game: force-start the CURRENTLY OPEN lobby now.
+    if (cmd[0] === 'begin') {
         if (!activeGameChat) {
-            await sendSafeMessage(sock, replyTo, { text: `⚠️ No active lobby to force-start. Open one with *${config.PREFIX} start* in the group first.` })
-        } else {
-            const gs = getGameState(activeGameChat, games)
-            if (gs.lobbyActive) {
-                if (gs.lobbyTimer) clearInterval(gs.lobbyTimer)
-                await sock.sendMessage(activeGameChat, {
-                    text: `⚡ *Game starting early!*\n\nThe admin has force-started the game. Lobby is now closed — let's go! 🎮`
-                })
-                await sendSafeMessage(sock, replyTo, { text: `▶️ *Force-start sent.* Game is launching now in the group. ⚡` })
-                await startActualGame(activeGameChat, {
-                    sock, games, settings, words, activeGameChatRef, persistGames, nameCache
-                })
-            } else if (gs.active) {
-                await sendSafeMessage(sock, replyTo, { text: `⚠️ The game is already in progress — use */hmg end* to stop it first.` })
-            } else if (gs.cooldownActive) {
-                // BUG FIX: force-start used to fall through to "No active lobby
-                // found" during the 2-minute post-round cooldown, with no way to
-                // skip the wait. Now it breaks the cooldown and opens a fresh
-                // lobby immediately.
-                if (gs.cooldownTimer) clearInterval(gs.cooldownTimer)
-                gs.cooldownActive = false
-                persistGames()
-                await sendSafeMessage(sock, replyTo, { text: `⚡ *Cooldown skipped.* Opening a fresh lobby now. 🎮` })
-                await openFreshLobby(activeGameChat, {
-                    sock, games, settings, nameCache, activeGameChatRef, persistGames
-                })
-            } else {
-                await sendSafeMessage(sock, replyTo, { text: `⚠️ No active lobby found. Open one with *${config.PREFIX} start* in the group.` })
-            }
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ No open lobby to start early right now.` })
+            return
         }
+        const gs = getGameState(activeGameChat, games)
+        if (!gs.lobbyActive) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ No open lobby to start early right now.` })
+            return
+        }
+        if (gs.players.length < config.MIN_PLAYERS_TO_BEGIN) {
+            await sendSafeMessage(sock, replyTo, {
+                text: `⚠️ Need at least *${config.MIN_PLAYERS_TO_BEGIN} player${config.MIN_PLAYERS_TO_BEGIN === 1 ? '' : 's'}* in the lobby to start.`
+            })
+            return
+        }
+        if (gs.lobbyTimer) clearInterval(gs.lobbyTimer)
+        await sock.sendMessage(activeGameChat, {
+            text: `⚡ *Game starting early!*\n\nThe admin has force-started the game. Lobby is now closed — let's go! 🎮`
+        })
+        await sendSafeMessage(sock, replyTo, { text: `▶️ *Force-start sent.* Game is launching now in the group. ⚡` })
+        await startActualGame(activeGameChat, {
+            sock, games, settings, words, activeGameChatRef, persistGames, nameCache
+        })
+        return
+    }
+
+    // ─── /hmg skipcooldown — break the post-round auto-cooldown ───
+    // Genuinely Hangman-specific: only this game auto-cools-down and
+    // reopens between rounds, so this stays a distinct command rather
+    // than being forced into the shared "begin" name.
+    if (cmd[0] === 'skipcooldown') {
+        if (!activeGameChat) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ No cooldown running right now.` })
+            return
+        }
+        const gs = getGameState(activeGameChat, games)
+        if (gs.lobbyActive) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ There's already an open lobby — use */hmg begin* to start it early instead.` })
+            return
+        }
+        if (gs.active) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ The game is already in progress — use */hmg end* to stop it first.` })
+            return
+        }
+        if (!gs.cooldownActive) {
+            await sendSafeMessage(sock, replyTo, { text: `⚠️ No cooldown running right now.` })
+            return
+        }
+        if (gs.cooldownTimer) clearInterval(gs.cooldownTimer)
+        gs.cooldownActive = false
+        persistGames()
+        await sendSafeMessage(sock, replyTo, { text: `⚡ *Cooldown skipped.* Opening a fresh lobby now. 🎮` })
+        await openFreshLobby(activeGameChat, {
+            sock, games, settings, nameCache, activeGameChatRef, persistGames
+        })
         return
     }
 
@@ -545,9 +540,8 @@ async function handleAdminCommand(ctx) {
         if (!activeGameChat) {
             await sendSafeMessage(sock, replyTo, { text: `⚠️ No active game to pause right now.` })
         } else {
-            const gs = getGameState(activeGameChat, games)
-            if (gs.active && !gs.paused) {
-                gs.paused = true
+            const ok = pauseSession(activeGameChat, { games, persistGames })
+            if (ok) {
                 persistGames()
                 await sendSafeMessage(sock, replyTo, { text: `⏸️ *Game paused.* ✅` })
                 await sock.sendMessage(activeGameChat, { text: `⏸️ *Game paused by the admin.* Sit tight — we'll be right back! ☕` })
@@ -562,13 +556,10 @@ async function handleAdminCommand(ctx) {
         if (!activeGameChat) {
             await sendSafeMessage(sock, replyTo, { text: `⚠️ No active game to resume right now.` })
         } else {
-            const gs = getGameState(activeGameChat, games)
-            if (gs.active && gs.paused) {
-                gs.paused = false
-                persistGames()
+            const ok = resumeSession(activeGameChat, { sock, games, settings, activeGameChatRef, persistGames, nameCache: ctx.nameCache })
+            if (ok) {
                 await sendSafeMessage(sock, replyTo, { text: `▶️ *Game resumed!* ✅` })
                 await sock.sendMessage(activeGameChat, { text: `▶️ *Game resumed by the admin!* Back in action — keep guessing! 🔥` })
-                startTurnCountdown(activeGameChat, { sock, games, settings, activeGameChatRef, persistGames, nameCache: ctx.nameCache })
             } else {
                 await sendSafeMessage(sock, replyTo, { text: `⚠️ Game is not currently paused.` })
             }
@@ -602,7 +593,13 @@ async function handleAdminCommand(ctx) {
         return
     }
 
-    // Unknown command — absolute silence
+    // Unrecognised /hmg subcommand — explicit error, not silence.
+    // An admin who typos a command deserves to know, not be left
+    // guessing. Standardized across all games (was silent here and
+    // in WCL, explicit in RoastGame — now explicit everywhere).
+    await sendSafeMessage(sock, replyTo, {
+        text: `⚠️ *Unknown command.* Try \`${config.ADMIN_PREFIX}help\`.`
+    })
 }
 
 module.exports = { handleAdminCommand }

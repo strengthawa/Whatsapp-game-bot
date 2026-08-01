@@ -1,5 +1,5 @@
 // ============================================================
-//  WordClimbGame/matchSummary.js — WCL Bot · Sky Graphics
+//  WordClimbGame/matchSummary.js — Word Climb · Sky Graphics
 //  Pure bookkeeping + message formatting for the end-of-match
 //  board. Never owns game state — gameEngine.js hands it a
 //  finished gameState and gets back a plain report object;

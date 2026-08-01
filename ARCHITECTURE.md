@@ -156,14 +156,38 @@ public (like a self-service "claim the admin role" command), put that
 check in `publicCommands.js`, not here.
 
 After the tier gate, also respect the creator's per-game admin scoping
-(the confirmed ADMIN — never the CREATOR — can be restricted to one
-game):
+(the confirmed ADMIN — never the CREATOR — can be restricted to one or
+more games via `/admin set`/`/admin clear` — the only place station
+assignment happens; see COMMAND_REFERENCE.md §1 for the Registered
+vs. Stationed distinction).
+Use `permissions.hasGameAccess()` rather than inlining this check —
+it's the one function that knows `settings.adminGameAccess` can be
+`'all'`, an array, or (for data written before the list model) a bare
+legacy string:
+
 ```js
-if (!senderIsCreator) {
-    const scope = settings.adminGameAccess || 'all'
-    if (scope !== 'all' && scope !== config.GAME_KEY) return
-}
+const { hasGameAccess } = require('../permissions')
+const isScopedIn = senderIsCreator || hasGameAccess(config.GAME_KEY, settings)
+const isAdmin    = (senderIsCreator || senderTier === TIERS.ADMIN) && isScopedIn
+if (!isAdmin) return
 ```
+
+Fold this into `isAdmin` itself rather than checking it separately
+further down the function — Hangman's original version computed
+`isAdmin` first and only checked scope later, right before the
+mutating commands, which meant a scoped-out admin still received the
+*full help dashboard* (an information leak, not a mutation risk, but
+still not "total silence"). Folding the scope check into `isAdmin`
+directly means every command — including `help` — gets exactly the
+same silent refusal.
+
+**This scope check was found completely missing** in `WordClimbGame`
+and `RoastGame`'s admin handlers — only `HangmanGame` had it. An admin
+stationed on Hangman-only could still run every command in the other
+two games, unrestricted. If you're adding a new game folder, copy the
+pattern above verbatim; don't reimplement it, and don't skip it because
+"it probably doesn't matter for this game" — it mattered here too,
+right up until someone checked.
 
 ## 6. The `sendSafeMessage` contract
 
@@ -348,7 +372,118 @@ between two game folders. This preserves the same independence guarantee
 as every other rule in this document: no game ever knows another game
 exists.
 
-## 11. Before every deploy
+## 10.1 The shared kernel (`gameKernel.js`)
+
+Some behaviors are genuinely game-agnostic but were, for a while, built
+exactly once inside `HangmanGame` and never abstracted out — every later
+game either copy-pasted the pattern (drift risk, exactly what happened:
+`HangmanGame` and `WordClimbGame`'s lobby-open logic ended up living in
+two different architectural layers under the same folder-naming
+convention) or simply lacked the feature. `gameKernel.js`, at the project
+root, is where those pieces now live. Import it the same way you import
+`permissions.js`:
+
+```js
+const kernel = require('../gameKernel')
+```
+
+Currently exported:
+
+- **`buildCard(config, titleLine, bodyText)`** — the one consistent
+  header/divider/footer frame every "card" message should use. Don't
+  hand-roll your own divider/footer combination per game; three
+  different footer phrasings across three games is exactly the drift
+  this prevents.
+- **`pauseTimer(gameState, activeTimer, clearFn)`** /
+  **`resumeTimer(gameState, rearmFn)`** — the paused-flag contract and
+  clear/re-arm sequencing for pause/resume. Every game's turn timer is
+  shaped differently (a self-clearing `setInterval` vs. a one-shot
+  `setTimeout`), so the kernel doesn't own the timer type — it owns the
+  transition, and your `gameEngine.js` supplies the clear/re-arm
+  callbacks specific to your timer. See `HangmanGame/gameEngine.js`'s
+  or `WordClimbGame/gameEngine.js`'s `pauseSession`/`resumeSession` for
+  the reference pattern.
+- **`botIdentityLine()`** — the single-line liveness signal (`🤖
+  online`) every game's bare-command card shows as its first line.
+  Replaces any per-game "ping/pong" debug volley — a bare command
+  should be **one message**, not several.
+
+`pauseSession`/`resumeSession` are optional exports, same rule as
+`forceStopActiveSession` in §10: a game with no live "round" to pause
+(`RoastGame`, for instance — there's no session in progress between a
+`!roast me` and its reply) simply doesn't implement or expose them, and
+its admin dashboard doesn't advertise `pause`/`resume` at all. Don't add
+these to a game for symmetry's sake if there's nothing to pause.
+
+## 10.2 The `matchSummary.js` contract — pure functions only
+
+If your game has a `matchSummary.js`, its exported functions **build and
+return a report, they never call `sock.sendMessage` themselves.** The
+caller (`publicCommands.js`, usually) owns sending:
+
+```js
+// matchSummary.js
+function buildMatchReport(gameState, outcome, tag) {
+    // ...compose the report text/mentions...
+    return { text: report, mentions: [...mentionSet] }
+}
+module.exports = { buildMatchReport }
+```
+
+```js
+// publicCommands.js
+const report = matchSummary.buildMatchReport(gameState, outcome, tag)
+await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
+```
+
+This was previously inconsistent: `HangmanGame`'s `matchSummary.js` sent
+directly (an active sender), `WordClimbGame`'s only ever returned a
+value (pure bookkeeping) — same filename, same stated role in this
+document's own table, opposite contract. That's exactly the kind of trap
+that breaks a future game copying "the pattern" from whichever file it
+happened to read first. Pure-return, always — if you don't have a
+report worth building, don't export a `matchSummary.js` at all.
+
+## 10.3 Unknown-subcommand convention
+
+- **Admin (`/`) commands:** an unrecognized subcommand gets an
+  **explicit reply** (`⚠️ Unknown command. Try /yourgame help.`), never
+  silence. An admin typo deserves to know, not be left guessing —
+  they're the one person actually supposed to be in control.
+- **Public (`!`) commands:** an unrecognized subcommand is **silently
+  ignored** (or, if you'd rather, falls through to the same explainer
+  card as the bare acronym). Public chat is noisy already; don't add a
+  bot reply to every random message that happens to start with your
+  prefix.
+
+Pick one of these per surface and apply it consistently — don't decide
+file-by-file. This was previously inconsistent across all three
+existing games and is now standardized to the rule above in each.
+
+## 10.4 Bot-wide settings vs. per-game settings — where the line is
+
+§4 already covers *how* to prefix a per-game setting. This is about
+*which bucket a setting belongs in at all*, because getting this wrong
+creates a specific, easy-to-miss bug: **`publicVisible`, `publicCanStart`,
+and `autoJoin` govern whichever game is currently active, not any one
+game in particular** — so they must be reachable regardless of which
+game is active. They used to be exposed only through
+`HangmanGame/adminCommands.js` (`/hmg set public`, etc.), which meant an
+admin had no way to toggle them at all while a different game was
+active — a real, live instance of the exact failure mode §1's "the
+project is a plugin host, nothing more" rule exists to prevent, just one
+level down (one *game*, not the host, owning a bot-wide concern).
+
+They now live in `game-switch-commands.js`, reachable as `/game set
+public|start|autojoin [on/off]` regardless of the active game. Rule of
+thumb going forward: **if toggling a setting would stop making sense the
+moment a different game became active, it's per-game and belongs behind
+your own prefix (§4). If it would keep meaning the same thing no matter
+which game is active, it's bot-wide and belongs in `game-switch-
+commands.js`, not your game's folder — even if your game was the first
+(or only) one to need it.**
+
+
 
 ```
 npm run verify
@@ -379,3 +514,11 @@ deploying; ⚠️ warnings won't block a deploy but are worth reading.
 | Typing bare `!m4th` or `!tgt` (no subcommand) either silently force-started a round with no explanation, or hit a confusing "only an admin can start" wall | `publicCommands.js` merged the "nothing typed" case into the same `if` branch as the `'start'` subcommand | §9 + `npm run verify` check 6 |
 | `WordChainGame`'s difficulty/timer/strikes settings were one future game's `writeSetting('difficulty', ...)` away from silently overwriting (or being overwritten by) another game's setting of the same name | Settings were written under bare generic keys (`'difficulty'`, `'timerSeconds'`, `'maxStrikes'`) instead of a `GAME_KEY`-prefixed key | §4 (settings sub-rule) |
 | Switching games mid-round (`/game setgame ...`) left the previous game's timers running and posting into the group at the same time as the new game, with no message explaining what (if anything) had been stopped | `setgame`'s handler only ever wrote `settings.activeGame` — it never checked or stopped a live session in the shared `activeGameChatRef` chat | §10 (`forceStopActiveSession`) |
+| `RoastGame`'s advertised privacy guarantee ("nobody in this group sees it") was a README claim, not a code guarantee — `!roast me` typed inside a group delivered the roast straight into the group | No check anywhere in `publicCommands.js`/`gameEngine.js`/`config.js` on whether the chat was a group or a DM before delivering | new: gate on chat type before any profile lookup, never just claim it in copy |
+| `HangmanGame`'s dashboard advertised `/hmg set admin [number]` → `/hmg confirm`/`/hmg cancel` as live, working commands with real usage syntax; the actual handler for those tokens only redirects elsewhere | Nobody updated the displayed help text after the redirect was added | §10.4 pattern — a redirect-only handler should never also appear as a documented, syntax-bearing dashboard entry |
+| Three different footer phrasings existed across cards (`_X Bot · Sky Graphics_ 🎨`, `_Created with ❤️ by Sky Graphics_ 🎨`, `_Sky Graphics — X_`), and one game's public explainer card had no footer at all | No shared card template — every file hand-rolled its own header/footer | §10.1 `kernel.buildCard` |
+| The highest-traffic command (bare acronym, typed by literally every first-time player) sent 4 separate messages before the actual explainer card | A ping/pong debug snippet was left wired into production | §10.1 `kernel.botIdentityLine()` — one identity line, one message |
+| An admin scoped to Hangman-only via `/game setadminaccess hangman` could still run every command in `WordClimbGame` and `RoastGame`, completely unrestricted | Only `HangmanGame`'s admin handler actually checked `settings.adminGameAccess` before proceeding — the other two only checked tier, never scope | §5 — use `permissions.hasGameAccess()`, don't reimplement or skip the scope check |
+| `!wcl begin` let any joined player force-start the lobby, not just an admin, and required a hardcoded 2 players regardless of what the game actually needed | Early-start logic lived in `publicCommands.js` gated only on "you're in the lobby," with no `config`-driven floor | now `/wcl begin`, admin-only, gated on `config.MIN_PLAYERS_TO_BEGIN` |
+| `WordClimbGame`'s word source was a hand-typed array capped at 8 letters, with no path to widen it without editing code | No dictionary was ever wired in, despite the file's own comment calling it a "drop-in upgrade later" | now backed by static, offline-generated `dictionary-data.json` (3–12 letters, profanity-filtered) — see `wordBank.js` header for why it's static rather than a live `word-list` require |
+

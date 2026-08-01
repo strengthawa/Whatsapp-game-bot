@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-game-bots", "version": "2.1.0",
-  "description": "Pluggable multi-game WhatsApp bot (Baileys) — HangMan, Word Climb.",
+  "description": "Pluggable multi-game WhatsApp bot (Baileys)",
   "main": "index.js", "type": "commonjs",
   "engines": { "node": ">=20.0.0" },
   "scripts": { "start": "node index.js", "verify": "node scripts/verify-games.js", "prestart": "node scripts/verify-games.js" },

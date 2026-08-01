@@ -1,5 +1,5 @@
 // ============================================================
-//  games-registry.js — HMG Bot · Sky Graphics
+//  games-registry.js — Game Bots · Sky Graphics
 //  Central registry of pluggable games. Each game lives in its own
 //  folder (e.g. /HangmanGame, /WordLadderGame) and exports:
 //    config.js          — GAME_KEY, GAME_NAME, PREFIX, ADMIN_PREFIX, ...

@@ -1,5 +1,5 @@
 // ============================================================
-//  RoastGame/publicCommands.js — Sky Graphics
+//  RoastGame/publicCommands.js — Roast Game · Sky Graphics
 //  Handles all PUBLIC (non-admin) message flow for this game:
 //    !roast              — explainer card (never stateful — see
 //                           ARCHITECTURE.md §9, bare-acronym rule)
@@ -16,10 +16,23 @@
 
 const config = require('./config')
 const engine = require('./gameEngine')
+const kernel = require('../gameKernel')
+
+// TODO(kernel): group-vs-DM detection is a generic message-shape concern,
+// not specific to RoastGame. When the shared kernel module is extracted,
+// move this to that module so every game can gate on it, not just this one.
+function isGroupChat(jid) {
+    return typeof jid === 'string' && jid.endsWith('@g.us')
+}
+
+const GROUP_REDIRECT_TEXT =
+    `🔒 *That one's private.*\n` +
+    `DM me *${config.PREFIX} me* or *${config.PREFIX} savage* — nothing posts here. 🤐`
 
 const HELP_TEXT =
     `${config.DIVIDER}\n` +
     `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM})*\n` +
+    `🤖 ${kernel.botIdentityLine()}\n` +
     `${config.DIVIDER}\n\n` +
     `Your roast is 100% private — nobody in this group sees it unless ` +
     `you choose to screenshot and post it yourself.\n\n` +
@@ -85,6 +98,16 @@ async function handlePublicMessage(msgCtx) {
 
     if (subCmd !== 'me' && subCmd !== 'savage') {
         await sock.sendMessage(from, { text: HELP_TEXT })
+        return true
+    }
+
+    // ── Privacy gate: 'me'/'savage' NEVER deliver into a group chat. ──
+    // This is the actual guarantee the README/help text advertises —
+    // it must be enforced here, not just claimed in copy. No roast
+    // lookup happens at all for a group invocation; the group only
+    // ever sees the redirect line, never a "no profile" leak either.
+    if (isGroupChat(from)) {
+        await sock.sendMessage(from, { text: GROUP_REDIRECT_TEXT })
         return true
     }
 

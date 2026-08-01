@@ -1,5 +1,5 @@
 // ============================================================
-//  RoastGame/adminCommands.js — Sky Graphics
+//  RoastGame/adminCommands.js — Roast Game · Sky Graphics
 //  Handles all "/roast" commands.
 //
 //  Access tiers:
@@ -17,16 +17,20 @@
 //  group the command was typed in (ARCHITECTURE.md §6).
 // ============================================================
 
-const { TIERS } = require('../permissions')
+const { TIERS, hasGameAccess } = require('../permissions')
 const config = require('./config')
 const { profiles } = require('./roastData')
 
 async function handleAdminCommand(ctx) {
-    const { sock, sendSafeMessage, senderTier, senderJid, body } = ctx
+    const { sock, sendSafeMessage, senderTier, senderJid, body, settings } = ctx
 
     // ── §5: mandatory tier gate, before anything else ────────
     const senderIsCreator = senderTier === TIERS.CREATOR
-    const isAdmin = senderIsCreator || senderTier === TIERS.ADMIN
+    // Scope gate — see WordClimbGame/adminCommands.js for the full note.
+    // Same gap existed here: an admin scoped away from RoastGame could
+    // still run /roast list unrestricted.
+    const isScopedIn = senderIsCreator || hasGameAccess(config.GAME_KEY, settings)
+    const isAdmin = (senderIsCreator || senderTier === TIERS.ADMIN) && isScopedIn
     if (!isAdmin) return false
 
     const replyTo = senderJid
