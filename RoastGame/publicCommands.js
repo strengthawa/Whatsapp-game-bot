@@ -29,21 +29,27 @@ const GROUP_REDIRECT_TEXT =
     `🔒 *That one's private.*\n` +
     `DM me *${config.PREFIX} me* or *${config.PREFIX} savage* — nothing posts here. 🤐`
 
-const HELP_TEXT =
-    `${config.DIVIDER}\n` +
-    `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM})*\n` +
-    `🤖 ${kernel.botIdentityLine()}\n` +
-    `${config.DIVIDER}\n\n` +
-    `Your roast is 100% private — nobody in this group sees it unless ` +
-    `you choose to screenshot and post it yourself.\n\n` +
-    `*🎮 How to get yours:*\n` +
-    `DM me directly (not in this group) with:\n` +
-    `1️⃣ *${config.PREFIX} me* — a nice roast\n` +
-    `2️⃣ *${config.PREFIX} me again* — a second nice one\n` +
-    `3️⃣ *${config.PREFIX} savage* — the dirty version\n` +
-    `4️⃣ *${config.PREFIX} savage again* — a second dirty one\n\n` +
-    `${config.DIVIDER}\n` +
-    `_Sky Graphics — ${config.GAME_NAME}_ 😁`
+// Was a module-level constant — kernel.botIdentityLine() only ran once,
+// at process startup, freezing the identity line for the bot's entire
+// lifetime. Now a function, built fresh per request.
+function buildHelpText(receivedAt) {
+    return (
+        `${config.DIVIDER}\n` +
+        `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM})*\n` +
+        `🤖 ${kernel.botIdentityLine(receivedAt)}\n` +
+        `${config.DIVIDER}\n\n` +
+        `Your roast is 100% private — nobody in this group sees it unless ` +
+        `you choose to screenshot and post it yourself.\n\n` +
+        `*🎮 How to get yours:*\n` +
+        `DM me directly (not in this group) with:\n` +
+        `1️⃣ *${config.PREFIX} me* — a nice roast\n` +
+        `2️⃣ *${config.PREFIX} me again* — a second nice one\n` +
+        `3️⃣ *${config.PREFIX} savage* — the dirty version\n` +
+        `4️⃣ *${config.PREFIX} savage again* — a second dirty one\n\n` +
+        `${config.DIVIDER}\n` +
+        `_Sky Graphics — ${config.GAME_NAME}_ 😁`
+    )
+}
 
 const NO_PROFILE_TEXT =
     `😅 *No roast on file for you yet.*\n\n` +
@@ -80,7 +86,7 @@ async function deliverRoast(sock, from, profile, tier, wantsAgain) {
 
 async function handlePublicMessage(msgCtx) {
     const {
-        sock, nameCache, from, body, senderNumber, senderName
+        sock, nameCache, from, body, senderNumber, senderName, receivedAt
     } = msgCtx
 
     if (!body.startsWith(config.PREFIX)) return false
@@ -92,12 +98,12 @@ async function handlePublicMessage(msgCtx) {
     const subCmd = parts[0]
 
     if (!subCmd || subCmd === 'help') {
-        await sock.sendMessage(from, { text: HELP_TEXT })
+        await sock.sendMessage(from, { text: buildHelpText(receivedAt) })
         return true
     }
 
     if (subCmd !== 'me' && subCmd !== 'savage') {
-        await sock.sendMessage(from, { text: HELP_TEXT })
+        await sock.sendMessage(from, { text: buildHelpText(receivedAt) })
         return true
     }
 

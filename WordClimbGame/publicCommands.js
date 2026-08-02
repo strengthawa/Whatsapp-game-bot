@@ -28,27 +28,36 @@ function resolveJid(number, playerJids) {
     return (playerJids && playerJids[number]) || `${number}@s.whatsapp.net`
 }
 
-const HELP_TEXT =
-    `${config.DIVIDER}\n` +
-    `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM}) Bot*\n` +
-    `🤖 ${kernel.botIdentityLine()}\n` +
-    `${config.DIVIDER}\n` +
-    `A live elimination word game — the required word length climbs a rung ` +
-    `every lap, from *${config.MIN_LENGTH} letters* all the way to *${config.MAX_LENGTH}*.\n\n` +
-    `*🎮 How to Play:*\n` +
-    `1️⃣ Type *${config.PREFIX} start* to open a lobby\n` +
-    `2️⃣ Type *${config.PREFIX} join* to enter it\n` +
-    `3️⃣ On your turn, the bot gives you a starting *letter* + required *length* — reply with a real word matching both\n` +
-    `4️⃣ You have *${config.TURN_SECONDS} seconds*. Timeout, wrong word, or a repeat = a strike\n` +
-    `5️⃣ *${config.MAX_STRIKES} strikes* and you're eliminated 🚫\n` +
-    `6️⃣ Last climber standing wins — or if everyone survives to the top, the *longest word reached* wins 🏆\n\n` +
-    `${config.DIVIDER}\n` +
-    `_Sky Graphics — ${config.GAME_NAME}_`
+// Was a module-level constant — meant kernel.botIdentityLine() only ever
+// ran once, at process startup, and every "!wcl" reply afterward showed
+// that same frozen line forever. Now a function, built fresh per request,
+// so the identity line (and its real elapsed-time reading) is honest
+// every time, not just on the first call after boot.
+function buildHelpText(receivedAt) {
+    return (
+        `${config.DIVIDER}\n` +
+        `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM}) Bot*\n` +
+        `🤖 ${kernel.botIdentityLine(receivedAt)}\n` +
+        `${config.DIVIDER}\n` +
+        `A live elimination word game — the required word length climbs a rung ` +
+        `every lap, from *${config.MIN_LENGTH} letters* all the way to *${config.MAX_LENGTH}*.\n\n` +
+        `*🎮 How to Play:*\n` +
+        `1️⃣ Type *${config.PREFIX} start* to open a lobby\n` +
+        `2️⃣ Type *${config.PREFIX} join* to enter it\n` +
+        `3️⃣ On your turn, the bot gives you a starting *letter* + required *length* — reply with a real word matching both\n` +
+        `4️⃣ You have *${config.TURN_SECONDS} seconds*. Timeout, wrong word, or a repeat = a strike\n` +
+        `5️⃣ *${config.MAX_STRIKES} strikes* and you're eliminated 🚫\n` +
+        `6️⃣ Last climber standing wins — or if everyone survives to the top, the *longest word reached* wins 🏆\n` +
+        `📖 Type *${config.PREFIX} help* any time to see this again.\n\n` +
+        `${config.DIVIDER}\n` +
+        `_Sky Graphics — ${config.GAME_NAME}_`
+    )
+}
 
 async function handlePublicMessage(msgCtx) {
     const {
         sock, games, settings, activeGameChatRef, persistGames, nameCache,
-        from, body, rawBody, senderNumber, senderJid, senderName, isAdmin
+        from, body, rawBody, senderNumber, senderJid, senderName, isAdmin, receivedAt
     } = msgCtx
 
     const ctx = { sock, games, settings, activeGameChatRef, persistGames, nameCache }
@@ -56,7 +65,7 @@ async function handlePublicMessage(msgCtx) {
 
     // ── Bare "!wcl" = explainer only, NEVER stateful (§9) ────
     if (body === config.PREFIX) {
-        await sock.sendMessage(from, { text: HELP_TEXT })
+        await sock.sendMessage(from, { text: buildHelpText(receivedAt) })
         return true
     }
 
@@ -73,7 +82,7 @@ async function handlePublicMessage(msgCtx) {
     const subCmd = parts[1]
 
     if (!subCmd || subCmd === 'help') {
-        await sock.sendMessage(from, { text: HELP_TEXT })
+        await sock.sendMessage(from, { text: buildHelpText(receivedAt) })
         return true
     }
 
@@ -119,7 +128,8 @@ async function handlePublicMessage(msgCtx) {
             text:
                 `✅ *${nameTag(senderNumber, nameCache, settings)} joined the climb!* 🧗\n\n` +
                 `👥 *Lobby:*\n${lobbyText}\n\n` +
-                `_Type *${config.PREFIX} join* to hop in!_`,
+                `_Type *${config.PREFIX} join* to hop in!_\n` +
+                `_Type *${config.PREFIX} help* for commands._`,
             mentions: lobbyMentions
         })
         persistGames()
@@ -132,8 +142,14 @@ async function handlePublicMessage(msgCtx) {
     // the floor is config.MIN_PLAYERS_TO_BEGIN (currently 1) instead of a
     // hardcoded 2.
 
-    // Unrecognised !wcl subcommand — still "handled" (silently ignored),
-    // same convention as HangmanGame.
+    // Unrecognised !wcl subcommand — now explicit (was silent here and
+    // in HangmanGame; both fixed together, matching RoastGame's public
+    // side and every admin handler, which already reply).
+    await sock.sendMessage(from, {
+        text:
+            `❓ *Unknown command:* "${subCmd}"\n` +
+            `Type *${config.PREFIX} help* to see everything I can do.`
+    })
     return true
 }
 

@@ -3,7 +3,7 @@
   "description": "Pluggable multi-game WhatsApp bot (Baileys)",
   "main": "index.js", "type": "commonjs",
   "engines": { "node": ">=20.0.0" },
-  "scripts": { "start": "node index.js", "verify": "node scripts/verify-games.js", "prestart": "node scripts/verify-games.js" },
+  "scripts": { "start": "node index.js", "verify": "node scripts/verify-games.js", "test": "node scripts/run-tests.js", "prestart": "node scripts/verify-games.js && node scripts/run-tests.js" },
   "dependencies": {
     "@hapi/boom": "^10.0.1", "@whiskeysockets/baileys": "^7.0.0-rc13",
     "dotenv": "^17.4.2", "qrcode-terminal": "^0.12.0"

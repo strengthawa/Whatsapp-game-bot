@@ -427,7 +427,7 @@ async function closeLobbyAndStart(chatId, ctx) {
     const { sock, games } = ctx
     const gameState = getGameState(chatId, games)
 
-    if (gameState.players.length < 2) {
+    if (gameState.players.length < config.MIN_PLAYERS_TO_BEGIN) {
         gameState.lobbyActive = false
         ctx.activeGameChatRef.value = null
         await sock.sendMessage(chatId, {

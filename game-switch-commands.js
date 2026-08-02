@@ -82,7 +82,19 @@ async function handleGameSwitchCommands(ctx) {
 
     // ── setgame [key] ───────────────────────────────────────
     if (cmd[0] === 'setgame') {
-        if (!senderIsCreator) return false // not creator-only business here; let it fall through (will just be ignored)
+        if (!senderIsCreator) {
+            // An authenticated Admin (just not Creator) gets told why —
+            // silence here used to be indistinguishable from "not a
+            // real command." A random public sender still gets nothing,
+            // same as before, so command existence isn't leaked to them.
+            if (senderIsAdmin) {
+                await sendSafeMessage(sock, replyTo, {
+                    text: `🔒 \`/game setgame\` is creator-only. Ask the creator to switch the active game.`
+                })
+                return true
+            }
+            return false
+        }
 
         const target = (cmd[1] || '').toLowerCase()
         const game   = registry.getGame(target)
@@ -167,7 +179,15 @@ async function handleGameSwitchCommands(ctx) {
     // identically across every game — one flag, one place, no per-game
     // duplication or drift.
     if (cmd[0] === 'roletags') {
-        if (!senderIsCreator) return false
+        if (!senderIsCreator) {
+            if (senderIsAdmin) {
+                await sendSafeMessage(sock, replyTo, {
+                    text: `🔒 \`/game roletags\` is creator-only.`
+                })
+                return true
+            }
+            return false
+        }
 
         const arg = (cmd[1] || '').toLowerCase()
         if (arg !== 'on' && arg !== 'off') {

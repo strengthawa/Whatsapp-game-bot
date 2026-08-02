@@ -443,6 +443,10 @@ async function startBot() {
 
         for (const msg of messages) {
           try {
+            // Real receipt timestamp — used to report genuine processing
+            // latency on the bare-command identity line (gameKernel.botIdentityLine),
+            // replacing the old hardcoded "online" string with an honest number.
+            const receivedAt = Date.now()
             if (!msg.message) continue
             if (isDuplicateMessage(msg.key?.id)) {
                 console.log(`[dedup] Skipping duplicate: ${msg.key.id}`)
@@ -539,18 +543,32 @@ async function startBot() {
                     activeGameChatRef, games, persistGames
                 })
 
-                if (!handled && senderIsCreator) {
-                    await sendSafeMessage(sock, senderJid, {
-                        text:
-                            `🎮 *Game Switcher*\n\n` +
-                            `› \`/game setgame [key]\` — switch the active game\n` +
-                            `› \`/game set public [on/off]\` — non-admin visibility, bot-wide\n` +
-                            `› \`/game set start [on/off]\` — public lobby start, bot-wide\n` +
-                            `› \`/game set autojoin [on/off]\` — creator/admin auto-join, bot-wide\n` +
-                            `› \`/game status\` — show what's active and what's available\n` +
-                            `› \`/game roletags on|off\` — toggle (Creator)/(Admin) tags bot-wide\n\n` +
-                            `Available games: *${registry.listGameKeys().join(', ') || 'none loaded'}*`
-                    })
+                if (!handled) {
+                    if (senderIsCreator) {
+                        await sendSafeMessage(sock, senderJid, {
+                            text:
+                                `🎮 *Game Switcher*\n\n` +
+                                `› \`/game setgame [key]\` — switch the active game\n` +
+                                `› \`/game set public [on/off]\` — non-admin visibility, bot-wide\n` +
+                                `› \`/game set start [on/off]\` — public lobby start, bot-wide\n` +
+                                `› \`/game set autojoin [on/off]\` — creator/admin auto-join, bot-wide\n` +
+                                `› \`/game status\` — show what's active and what's available\n` +
+                                `› \`/game roletags on|off\` — toggle (Creator)/(Admin) tags bot-wide\n\n` +
+                                `Available games: *${registry.listGameKeys().join(', ') || 'none loaded'}*`
+                        })
+                    } else if (isAdmin) {
+                        // Authenticated Admin, unrecognized /game subcommand —
+                        // used to be pure silence (the dashboard above only
+                        // fired for the Creator). Now explicit, same
+                        // convention as every per-game public/admin handler.
+                        await sendSafeMessage(sock, senderJid, {
+                            text:
+                                `❓ Unknown \`/game\` command.\n` +
+                                `Try \`/game status\` to see what's active, or \`/game set public|start|autojoin [on/off]\`.`
+                        })
+                    }
+                    // A non-admin, non-creator sender still gets nothing —
+                    // command existence isn't leaked to unauthenticated senders.
                 }
                 continue
             }
@@ -615,7 +633,8 @@ async function startBot() {
                 sock, games, settings, words, activeGameChatRef, persistGames, nameCache,
                 sendSafeMessage,
                 buildCtx: () => buildCtx(sock),
-                from, body, rawBody, senderNumber, senderJid, senderName, isAdmin
+                from, body, rawBody, senderNumber, senderJid, senderName, isAdmin,
+                receivedAt
             }
             await handler(msgCtx)
           } catch (err) {

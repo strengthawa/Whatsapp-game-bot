@@ -62,7 +62,18 @@ function resumeTimer(gameState, rearmFn) {
 // The single-line liveness signal every game's bare command shows
 // as the first line of its explainer card (ARCHITECTURE.md §9).
 // Replaces the old per-game ping/pong debug volleys.
-function botIdentityLine() {
+//
+// @param {number} [receivedAt] — Date.now() captured when the inbound
+//   message was first seen (index.js). If provided, the line reports
+//   the real elapsed ms between receipt and this line being built —
+//   an honest, measured number, not a fabricated one. If omitted (a
+//   caller that doesn't have it), falls back to the plain "online"
+//   signal rather than inventing a number.
+function botIdentityLine(receivedAt) {
+    if (typeof receivedAt === 'number' && receivedAt > 0) {
+        const elapsedMs = Date.now() - receivedAt
+        return `online · ${elapsedMs}ms`
+    }
     return `online`
 }
 

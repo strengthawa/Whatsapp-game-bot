@@ -41,7 +41,7 @@ async function handlePublicMessage(msgCtx) {
     const {
         sock, games, settings, activeGameChatRef, persistGames, nameCache,
         sendSafeMessage, buildCtx, from, body, rawBody, senderNumber, senderJid,
-        senderName, isAdmin
+        senderName, isAdmin, receivedAt
     } = msgCtx
 
     const ctx = buildCtx()
@@ -52,15 +52,13 @@ async function handlePublicMessage(msgCtx) {
     // Collapsed to one message: the identity/liveness signal is now
     // the card's own first line, not 3 messages ahead of it.
     if (body === config.PREFIX) {
-        // No real round-trip left to time (the old 2-message ping/pong
-        // exchange was the only thing producing a genuine latency
-        // number, and it's gone). "online" is an honest liveness
-        // signal; a fabricated 0ms figure would not be.
+        // Real elapsed time from message receipt (index.js) to this line
+        // being built — a genuine measured latency, not a fabricated one.
         await sock.sendMessage(from, {
             text:
                 `${config.DIVIDER}\n` +
                 `${config.BOT_EMOJI}  *${config.GAME_NAME} (${config.GAME_ACRONYM}) Bot*\n` +
-                `🤖 ${kernel.botIdentityLine()}\n` +
+                `🤖 ${kernel.botIdentityLine(receivedAt)}\n` +
                 `${config.DIVIDER}\n` +
                 `Hey there! 👋 I'm the *${config.GAME_ACRONYM} Bot* — a live multiplayer word-guessing game built for WhatsApp groups.\n` +
                 `Players take turns guessing letters to reveal a hidden word. Miss 3 turns in a row and you're out! The last one standing wins. 🏆\n` +
@@ -70,7 +68,8 @@ async function handlePublicMessage(msgCtx) {
                 `1️⃣ Type *${config.PREFIX} start* to open a lobby\n` +
                 `2️⃣ Type *${config.PREFIX} join* to enter it\n` +
                 `3️⃣ Guess a letter, or the full word for an instant win ⚡\n` +
-                `4️⃣ Miss 3 turns in a row and you're disqualified 🚫`
+                `4️⃣ Miss 3 turns in a row and you're disqualified 🚫\n` +
+                `📖 Type *${config.PREFIX} help* any time to see this again.`
         })
         return true
     }
@@ -136,7 +135,8 @@ async function handlePublicMessage(msgCtx) {
                     text:
                         `✅ *${nameTag(senderNumber, nameCache, settings)} joined the lobby!* 🎉\n\n` +
                         `👥 *Current Lobby:*\n${lobbyText}\n\n` +
-                        `_Type *${config.PREFIX} join* to hop in!_ ⏱️`,
+                        `_Type *${config.PREFIX} join* to hop in!_ ⏱️\n` +
+                        `_Type *${config.PREFIX} help* for commands._`,
                     mentions: [...new Set([resolveJid(senderNumber, gameState.playerJids), ...lobbyMentions])]
                 })
                 persistGames()
@@ -174,7 +174,14 @@ async function handlePublicMessage(msgCtx) {
             return true
         }
 
-        // Unrecognised !hmg subcommand — still "handled" (silently ignored)
+        // Unrecognised !hmg subcommand — now explicit, matching the
+        // admin-side handlers (was silent here only; RoastGame's
+        // public side and every admin handler already reply).
+        await sock.sendMessage(from, {
+            text:
+                `❓ *Unknown command:* "${subCmd}"\n` +
+                `Type *${config.PREFIX} help* to see everything I can do.`
+        })
         return true
     }
 
