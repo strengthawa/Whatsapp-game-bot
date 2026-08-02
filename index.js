@@ -23,6 +23,47 @@ const { handleAdminOnboarding, ensureInactivityTimerRunning } = require('./admin
 const GAME_SWITCH_PREFIX = '/game '
 const ADMIN_ONBOARDING_PREFIX = '/admin'
 
+// ─── Boot-time CREATOR_JID check ──────────────────────────────
+// Every read site in this project does `process.env.CREATOR_JID || ''`
+// — a silent empty-string fallback with no logging anywhere. That meant
+// a fresh deploy missing this variable would boot clean, run clean, and
+// simply never recognize anyone as Creator — no error pointing at why.
+// This runs once, at require-time, before any connection attempt, so
+// it's the very first thing in the logs if something's wrong.
+function validateCreatorJid() {
+    const raw = process.env.CREATOR_JID || ''
+    const JID_PATTERN = /^\d{6,15}@s\.whatsapp\.net$/
+
+    if (!raw) {
+        console.log('')
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        console.log('⚠️  CREATOR_JID is not set.')
+        console.log('   No one will be recognized as Creator — admin')
+        console.log('   onboarding (approve/deny/set/clear) cannot')
+        console.log('   function at all until this is fixed.')
+        console.log('   Expected format: 15551234567@s.whatsapp.net')
+        console.log('   (country code + number, no "+", no spaces)')
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        console.log('')
+        return
+    }
+
+    if (!JID_PATTERN.test(raw)) {
+        console.log('')
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        console.log(`⚠️  CREATOR_JID is set but doesn't look right: "${raw}"`)
+        console.log('   Expected format: 15551234567@s.whatsapp.net')
+        console.log('   (digits only, then "@s.whatsapp.net" — no "+",')
+        console.log('   no spaces, no dashes)')
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        console.log('')
+        return
+    }
+
+    console.log(`✅ CREATOR_JID is set: ${raw}`)
+}
+validateCreatorJid()
+
 // ─── Safe DM sender ───────────────────────────────────────
 // Contract every game module relies on: sendSafeMessage(sock, jidOrNumber, payload)
 // where payload is a Baileys message object, e.g. { text: '...' }.
