@@ -9,7 +9,7 @@
 //  How a match works:
 //   - Players take turns in a shuffled rotation. On your turn the
 //     bot gives you a starting LETTER and a required LENGTH.
-//   - You have TURN_SECONDS to reply with a real word of exactly
+//   - You have a turn timer to reply with a real word of exactly
 //     that length, starting with that letter, not already used
 //     this match. Correct → your turn ends cleanly, your personal
 //     best length updates. Wrong / invalid / timeout → a strike.
@@ -17,9 +17,16 @@
 //     full lap of the rotation. Once everyone still standing has
 //     had a turn at the current length, the length climbs by +1
 //     for the next lap (config.MIN_LENGTH → config.MAX_LENGTH).
+//   - The turn timer shrinks as the length climbs (see
+//     gameKernel.computeScaledSeconds — config.TURN_SECONDS_START
+//     down to config.TURN_SECONDS_FLOOR), unless an admin has set a
+//     fixed override via "/wcl setturnseconds", which wins outright.
 //   - 3 strikes (accumulated across the whole match, not per lap)
 //     and you're eliminated. Elimination order is preserved for
-//     the final report.
+//     the final report, along with each player's own accumulated
+//     answer time (gameKernel's pause-aware turn-time tracker) and
+//     the single longest word of the match regardless of who
+//     ultimately won it.
 //   - The match ends when either only one player remains (they
 //     win outright) or the climb passes config.MAX_LENGTH with
 //     multiple survivors (best personal length wins; ties broken
@@ -32,8 +39,29 @@ const kernel = require('../gameKernel')
 const config = require('./config')
 const wordBank = require('./wordBank')
 
-function turnSeconds(settings) {
-    return resolveSetting(`${config.GAME_KEY}_turnSeconds`, settings, config.TURN_SECONDS)
+// Effective turn-timer seconds for the CURRENT length. An admin's
+// fixed "/wcl setturnseconds" override replaces the whole curve;
+// otherwise it's gameKernel's shared shrink-as-you-climb curve.
+function turnSecondsFor(gameState, settings) {
+    const override = resolveSetting(`${config.GAME_KEY}_turnSeconds`, settings, null)
+    if (override !== null && override !== undefined) return override
+    return kernel.computeScaledSeconds({
+        current:      gameState.currentLength,
+        min:          config.MIN_LENGTH,
+        max:          config.MAX_LENGTH,
+        startSeconds: config.TURN_SECONDS_START,
+        floorSeconds: config.TURN_SECONDS_FLOOR
+    })
+}
+
+// Human-readable line for admin status/help screens — shows the
+// live curve range when no override is set, or the fixed override
+// value when one is. Exported so adminCommands.js never has to know
+// which mode is active to render it correctly.
+function turnTimerDisplay(settings) {
+    const override = resolveSetting(`${config.GAME_KEY}_turnSeconds`, settings, null)
+    if (override !== null && override !== undefined) return `${override}s (fixed override)`
+    return `${config.TURN_SECONDS_START}s → ${config.TURN_SECONDS_FLOOR}s as length climbs (auto)`
 }
 
 // ─── State isolation — see ARCHITECTURE.md §4 ──────────────────
@@ -57,7 +85,7 @@ function freshState() {
         lobbyTimer:       null,
         lobbySecondsLeft: config.LOBBY_SECONDS,
         turnTimer:        null,
-        turnSecondsLeft:  config.TURN_SECONDS,
+        turnSecondsLeft:  config.TURN_SECONDS_START,
 
         players:      [],   // numbers still in the climb
         playerNames:  {},
@@ -74,7 +102,12 @@ function freshState() {
         currentLetter:   null,
         recentLetters:   [],  // avoid repeating the same letter back-to-back
 
-        matchStartedAt: 0
+        matchStartedAt: 0,
+        answerTimeMs:      {},   // { [number]: accumulated ms spent on own turns }
+        turnStartedAt:     0,
+        pausedAt:          null,
+        pausedMsThisTurn:  0,
+        longestWord:       null  // { word, length, number } — single longest word of the match, winner or not
     }
 }
 
@@ -159,6 +192,7 @@ function eliminateFromState(gameState, number, reason) {
         reason,
         atLength: gameState.currentLength,
         bestLength: gameState.bestLength[number] || 0,
+        answerTimeMs: (gameState.answerTimeMs && gameState.answerTimeMs[number]) || 0,
         order: gameState.eliminated.length + 1
     })
 
@@ -207,27 +241,58 @@ async function announceAndArm(chatId, ctx, turnResult) {
 
     const tag = tagFor(gameState, turnResult.player, settings)
     const jid = jidFor(gameState, turnResult.player)
-    const seconds = turnSeconds(settings)
+    const seconds = turnSecondsFor(gameState, settings)
+
+    const nextIdx = gameState.turnOrder.length > 0
+        ? (gameState.turnIndex + 1) % gameState.turnOrder.length
+        : gameState.turnIndex
+    const nextPlayer = gameState.turnOrder[nextIdx]
+    const nextTag = nextPlayer ? tagFor(gameState, nextPlayer, settings) : tag
+    const totalWords = Object.values(gameState.usedWords).reduce((n, list) => n + list.length, 0)
 
     await sock.sendMessage(chatId, {
         text:
-            `${config.DIVIDER}\n` +
-            `${config.BOT_EMOJI} *Rung: ${turnResult.length} letters*\n` +
-            `${config.DIVIDER}\n` +
-            `👉 ${tag}, give me a *${turnResult.length}-letter* word starting with *"${turnResult.letter.toUpperCase()}"*\n` +
-            `⏱️ You have *${seconds} seconds*.`,
-        mentions: [jid]
+            `🎲 ${tag}'s turn — next: ${nextTag}\n` +
+            `🆎 ${turnResult.length} letters, starts with "${turnResult.letter.toUpperCase()}"\n` +
+            `⏳ ${seconds}s · 🏆 ${gameState.turnOrder.length} left · 📝 ${totalWords} words`,
+        mentions: [jid, nextPlayer ? jidFor(gameState, nextPlayer) : jid]
     })
 
+    kernel.markTurnStart(gameState)
     if (gameState.turnTimer) clearTimeout(gameState.turnTimer)
     persistGames()
     gameState.turnTimer = setTimeout(() => handleTimeout(chatId, ctx), seconds * 1000)
 }
 
 async function sendFinalBoard(chatId, ctx, endResult) {
-    const { sock, activeGameChatRef } = ctx
+    const { sock, games, activeGameChatRef, persistGames } = ctx
+    const gameState = getGameState(chatId, games)
     const text = matchSummary.renderFinalBoardText(endResult.report)
     await sock.sendMessage(chatId, { text })
+
+    // Cross-match leaderboard (opt-in, see gameKernel.js) — every
+    // player who was ever in this match, winner and eliminated alike,
+    // with their own bestLength as the personal-best stat (higher is
+    // better for WordClimb).
+    const allParticipants = [
+        ...gameState.players.map(num => ({
+            number: num,
+            name: gameState.playerNames[num] || num,
+            won: num === endResult.winner,
+            statValue: gameState.bestLength[num] || 0
+        })),
+        ...gameState.eliminated.map(e => ({
+            number: e.number,
+            name: e.name,
+            won: false,
+            statValue: e.bestLength || 0
+        }))
+    ]
+    if (allParticipants.length > 0) {
+        kernel.recordMatchResult(games, config.GAME_KEY, chatId, allParticipants, (a, b) => a > b)
+        if (typeof persistGames === 'function') persistGames()
+    }
+
     if (activeGameChatRef && activeGameChatRef.value === chatId) {
         activeGameChatRef.value = null
     }
@@ -240,6 +305,8 @@ async function handleTimeout(chatId, ctx) {
 
     const number = gameState.currentPlayer
     const tag = tagFor(gameState, number, settings)
+    const seconds = turnSecondsFor(gameState, settings)
+    kernel.accumulateTurnTime(gameState, number, seconds * 1000)
 
     gameState.strikes[number] = (gameState.strikes[number] || 0) + 1
     const struckOut = gameState.strikes[number] >= config.MAX_STRIKES
@@ -252,17 +319,11 @@ async function handleTimeout(chatId, ctx) {
     }
     persistGames()
 
-    if (struckOut) {
-        await sock.sendMessage(chatId, {
-            text:
-                `⏱️ *Time's up!* ${tag} didn't answer in time — that's strike ` +
-                `*${config.MAX_STRIKES}/${config.MAX_STRIKES}*. 🚫 *Eliminated from the climb!*`
-        })
-    } else {
-        await sock.sendMessage(chatId, {
-            text: `⏱️ *Time's up!* ${tag} takes a strike (*${gameState.strikes[number]}/${config.MAX_STRIKES}*). 💢`
-        })
-    }
+    await sock.sendMessage(chatId, {
+        text: struckOut
+            ? `⏱️ ${tag} timed out — ${tag} is *out* (${config.MAX_STRIKES}/${config.MAX_STRIKES} strikes) 🚫`
+            : `⏱️ ${tag} timed out — strike ${gameState.strikes[number]}/${config.MAX_STRIKES} 💢`
+    })
 
     if (endResult) {
         await announceAndArm(chatId, ctx, endResult)
@@ -290,6 +351,8 @@ async function submitGuess(chatId, ctx, senderNumber, rawWord) {
     const usedAtLength = gameState.usedWords[length] || []
     const word = (rawWord || '').trim().toLowerCase()
     const tag = tagFor(gameState, senderNumber, settings)
+    const seconds = turnSecondsFor(gameState, settings)
+    kernel.accumulateTurnTime(gameState, senderNumber, seconds * 1000)
 
     const valid = wordBank.isValidWord(word, length, letter, usedAtLength)
 
@@ -307,10 +370,8 @@ async function submitGuess(chatId, ctx, senderNumber, rawWord) {
 
         await sock.sendMessage(chatId, {
             text: struckOut
-                ? `❌ *"${rawWord}"* doesn't work (needs ${length} letters, start with "${letter.toUpperCase()}", and be a real word). ` +
-                  `That's strike *${config.MAX_STRIKES}/${config.MAX_STRIKES}* — ${tag} is *eliminated!* 🚫`
-                : `❌ *"${rawWord}"* doesn't work (needs ${length} letters, start with "${letter.toUpperCase()}", and be a real word). ` +
-                  `Strike *${gameState.strikes[senderNumber]}/${config.MAX_STRIKES}* for ${tag}. 💢`
+                ? `❌ "${rawWord}" doesn't fit — ${tag} is *out* (${config.MAX_STRIKES}/${config.MAX_STRIKES} strikes) 🚫`
+                : `❌ "${rawWord}" doesn't fit — ${tag} takes strike ${gameState.strikes[senderNumber]}/${config.MAX_STRIKES} 💢`
         })
 
         const nextTurn = endResult || advanceToNextTurn(gameState)
@@ -320,11 +381,14 @@ async function submitGuess(chatId, ctx, senderNumber, rawWord) {
 
     gameState.usedWords[length] = [...usedAtLength, word]
     gameState.bestLength[senderNumber] = Math.max(gameState.bestLength[senderNumber] || 0, length)
+    if (!gameState.longestWord || length > gameState.longestWord.length) {
+        gameState.longestWord = { word, length, number: senderNumber }
+    }
     gameState.turnIndex += 1
     persistGames()
 
     await sock.sendMessage(chatId, {
-        text: `✅ *"${word}"* is good! ${tag} climbs to *${length} letters*. 🧗`
+        text: `✅ "${word}" — ${tag} climbs to ${length}! 🧗`
     })
 
     const nextTurn = advanceToNextTurn(gameState)
@@ -379,16 +443,8 @@ async function openFreshLobby(chatId, ctx) {
 
     await sock.sendMessage(chatId, {
         text:
-            `${config.DIVIDER}\n` +
-            `${config.BOT_EMOJI} *${config.GAME_NAME} is Starting!*\n` +
-            `${config.DIVIDER}\n\n` +
-            `The climb begins at *${config.MIN_LENGTH} letters* and tops out at *${config.MAX_LENGTH}*.\n\n` +
-            `You have *${config.LOBBY_SECONDS} seconds* to join! ⏱️\n\n` +
-            `👥 *Current Lobby:*\n${autoJoinText}\n\n` +
-            `*Commands:*\n` +
-            `*${config.PREFIX} join* — Enter the lobby\n` +
-            `_(an admin can start early with \`${config.ADMIN_PREFIX.trim()} begin\`)_\n\n` +
-            `_Type *${config.PREFIX} join* now!_ 🔥`,
+            `🧗 *${config.GAME_NAME}* starting! Type *${config.PREFIX} join* — ${config.LOBBY_SECONDS}s to join.\n` +
+            `👥 ${autoJoinText}`,
         mentions: autoJoinMentions
     })
 
@@ -410,13 +466,8 @@ function startLobbyCountdown(chatId, ctx) {
             clearInterval(gameState.lobbyTimer)
             await closeLobbyAndStart(chatId, ctx)
         } else if (gameState.lobbySecondsLeft % 10 === 0) {
-            const lobbyText = gameState.players
-                .map((num, i) => `${i + 1}. ${nameTag(num, gameState.playerNames, settings)}`)
-                .join('\n')
             await sock.sendMessage(chatId, {
-                text:
-                    `⏱️ *${gameState.lobbySecondsLeft}s* left to join *${config.GAME_NAME}*!\n\n` +
-                    `👥 *Lobby:*\n${lobbyText || '[No one yet — be first! 🎯]'}`
+                text: `⏳ ${gameState.lobbySecondsLeft}s left to join — 👥 ${gameState.players.length} joined`
             })
         }
         persistGames()
@@ -436,7 +487,7 @@ async function closeLobbyAndStart(chatId, ctx) {
         return
     }
     await sock.sendMessage(chatId, {
-        text: `🚀 *Lobby closed — the climb begins!* ${gameState.players.length} climber${gameState.players.length === 1 ? '' : 's'} ready.`
+        text: `🚀 Climb begins! ${gameState.players.length} climber${gameState.players.length === 1 ? '' : 's'} ready.`
     })
     await startClimb(chatId, ctx)
 }
@@ -458,10 +509,16 @@ async function startClimb(chatId, ctx) {
     gameState.turnOrder = shuffle(gameState.players)
     gameState.turnIndex = 0
     gameState.matchStartedAt = Date.now()
+    gameState.answerTimeMs = {}
+    gameState.longestWord = null
+    gameState.turnStartedAt = 0
+    gameState.pausedAt = null
+    gameState.pausedMsThisTurn = 0
 
     for (const num of gameState.players) {
         gameState.strikes[num] = 0
         gameState.bestLength[num] = 0
+        gameState.answerTimeMs[num] = 0
     }
 
     persistGames()
@@ -480,13 +537,16 @@ async function startClimb(chatId, ctx) {
 function pauseSession(chatId, ctx) {
     const { games } = ctx
     const gameState = getGameState(chatId, games)
-    return kernel.pauseTimer(gameState, gameState.turnTimer, clearTimeout)
+    const paused = kernel.pauseTimer(gameState, gameState.turnTimer, clearTimeout)
+    if (paused) kernel.markPauseStart(gameState)
+    return paused
 }
 
 function resumeSession(chatId, ctx) {
     const { games, settings, persistGames } = ctx
     const gameState = getGameState(chatId, games)
-    const seconds = turnSeconds(settings)
+    kernel.markPauseEnd(gameState)
+    const seconds = turnSecondsFor(gameState, settings)
     const resumed = kernel.resumeTimer(gameState, () => {
         gameState.turnTimer = setTimeout(() => handleTimeout(chatId, ctx), seconds * 1000)
     })
@@ -515,6 +575,8 @@ module.exports = {
     clearTimers,
     jidFor,
     tagFor,
+    turnSecondsFor,
+    turnTimerDisplay,
     openFreshLobby,
     closeLobbyAndStart,
     startClimb,

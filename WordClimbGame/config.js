@@ -22,8 +22,15 @@ module.exports = {
     MAX_LENGTH:  12,
 
     // ── Lobby + turn timers ─────────────────────────────────
-    LOBBY_SECONDS: 45,
-    TURN_SECONDS:  30,
+    // Turn time isn't fixed anymore — it shrinks as the required
+    // length climbs, computed by gameKernel.computeScaledSeconds()
+    // between these two ends of the curve (30s at MIN_LENGTH down
+    // to 15s at MAX_LENGTH). An admin can still override with a
+    // single fixed value via "/wcl setturnseconds", which replaces
+    // the whole curve for that chat's next match.
+    LOBBY_SECONDS:       45,
+    TURN_SECONDS_START:  30,
+    TURN_SECONDS_FLOOR:  15,
 
     // ── Strikes ──────────────────────────────────────────────
     // A strike is a timeout OR a wrong/invalid guess. 3 strikes

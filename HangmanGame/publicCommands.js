@@ -157,6 +157,16 @@ async function handlePublicMessage(msgCtx) {
             return true
         }
 
+        if (subCmd === 'leaderboard' || subCmd === 'lb') {
+            const text = kernel.renderLeaderboardText(games, config.GAME_KEY, from, {
+                title: `🏆 *${config.GAME_NAME} — Leaderboard*`,
+                statLabel: ' wrong guesses',
+                emptyText: `No rounds recorded yet in this chat — type *${config.PREFIX} start* to begin!`
+            })
+            await sock.sendMessage(from, { text })
+            return true
+        }
+
         if (!subCmd || subCmd === 'help') {
             await sock.sendMessage(from, {
                 text:
@@ -168,7 +178,8 @@ async function handlePublicMessage(msgCtx) {
                     `4️⃣ On your turn, type a *single letter* to guess it, or the *full word* to win instantly ⚡\n` +
                     `5️⃣ Miss *3 turns in a row* and you're disqualified 🚫\n` +
                     `6️⃣ Last player standing wins! 🏆\n` +
-                    `📏 Word length adapts automatically each round — no fixed difficulty setting.\n\n` +
+                    `📏 Word length adapts automatically each round — no fixed difficulty setting.\n` +
+                    `🏆 Type *${config.PREFIX} leaderboard* to see this chat's standings.\n\n` +
                     `_Sky Graphics — ${config.GAME_NAME}_`
             })
             return true
@@ -207,6 +218,7 @@ async function handlePublicMessage(msgCtx) {
         })
         const outcome = { type: 'winner_instant', winnerNumber: senderNumber }
         const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+        matchSummary.recordLeaderboard(games, from, gameState, outcome)
         await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
         engine.adjustNextWordLength(gameState, outcome)
         gameState.players = []
@@ -238,6 +250,7 @@ async function handlePublicMessage(msgCtx) {
             })
             const outcome = { type: 'winner_letter', winnerNumber: senderNumber }
             const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            matchSummary.recordLeaderboard(games, from, gameState, outcome)
             await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
             engine.adjustNextWordLength(gameState, outcome)
             gameState.players = []
@@ -246,9 +259,7 @@ async function handlePublicMessage(msgCtx) {
         } else {
             const nextTurnIndex = (gameState.currentTurnIndex + 1) % gameState.players.length
             gameState.currentTurnIndex = nextTurnIndex
-            const feedback =
-                `✅ *Correct!*\n` +
-                `${nameTag(senderNumber, nameCache, settings)} guessed *${body.toUpperCase()}* and revealed the first occurrence! 🟢`
+            const feedback = `✅ ${nameTag(senderNumber, nameCache, settings)} guessed "${body.toUpperCase()}" — correct! 🟢`
             await engine.sendGameBoard(from, feedback, [resolveJid(senderNumber, gameState.playerJids)], ctx)
         }
         return true
@@ -271,28 +282,25 @@ async function handlePublicMessage(msgCtx) {
         })
     } catch (_) {}
 
-    const feedback =
-        `❌ *Wrong guess!*\n` +
-        `${nameTag(senderNumber, nameCache, settings)} guessed *${body.toUpperCase()}* — not in the word. 🔴\n` +
-        `_(${wrongCount}/${roundMaxTries} wrong guesses for this player)_`
+    const feedback = `❌ ${nameTag(senderNumber, nameCache, settings)} guessed "${body.toUpperCase()}" — not in the word (${wrongCount}/${roundMaxTries}) 🔴`
 
     if (wrongCount >= roundMaxTries) {
         matchSummary.recordDisqualification(gameState, currentPlayerNumber, matchSummary.DQ_REASONS.ATTEMPTS_EXHAUSTED)
         const removedIndex = gameState.currentTurnIndex
 
         const dqFeedback =
-            `${feedback}\n\n` +
-            `🚫 *Disqualified!*\n` +
-            `${nameTag(currentPlayerNumber, nameCache, settings)} has used all *${roundMaxTries}* wrong guesses and has been eliminated. 💀`
+            `${feedback}\n` +
+            `🚫 ${nameTag(currentPlayerNumber, nameCache, settings)} used all ${roundMaxTries} guesses — *disqualified* 💀`
 
         const lastStanding = matchSummary.checkLastPlayerStanding(gameState)
         if (lastStanding) {
             gameState.active = false
             await sock.sendMessage(from, {
-                text: `${dqFeedback}\n\n🏆 *LAST PLAYER STANDING!*\nThe word was *${gameState.targetWord.toUpperCase()}*. 🎉`
+                text: `${dqFeedback}\n🏆 *Last player standing!* The word was *${gameState.targetWord.toUpperCase()}*. 🎉`
             })
             const outcome = { type: 'last_standing', winnerNumber: lastStanding }
             const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            matchSummary.recordLeaderboard(games, from, gameState, outcome)
             await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
             engine.adjustNextWordLength(gameState, outcome)
             gameState.players = []
@@ -301,10 +309,11 @@ async function handlePublicMessage(msgCtx) {
         } else if (gameState.players.length === 0) {
             gameState.active = false
             await sock.sendMessage(from, {
-                text: `${dqFeedback}\n\n💀 *GAME OVER!* No players remain.\nThe word was *${gameState.targetWord.toUpperCase()}*.`
+                text: `${dqFeedback}\n💀 *Game over* — no players remain. The word was *${gameState.targetWord.toUpperCase()}*.`
             })
             const outcome = { type: 'no_winner' }
             const report = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, nameCache, settings))
+            matchSummary.recordLeaderboard(games, from, gameState, outcome)
             await sock.sendMessage(from, { text: report.text, mentions: report.mentions })
             engine.adjustNextWordLength(gameState, outcome)
             persistGames()

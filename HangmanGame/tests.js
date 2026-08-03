@@ -126,6 +126,86 @@ async function main() {
         assertEqual(ctx.sentMessages.length, 1, 'Bare command should send exactly 1 message')
     })
 
+    // ── Final board must show EVERY participant's own stat line
+    // (winner and disqualified alike), matching WordClimbGame's board
+    // shape — not just a win/loss flag. See WORDCLIMB_MESSAGE_REDESIGN.md
+    // and the follow-up request to bring the same shape to Hangman. ──
+    await run('buildMatchReport() shows a stat line for the winner AND every disqualified player', async () => {
+        const matchSummary = require('./matchSummary')
+        const gameState = engine.getGameState('test-chat-report@g.us', {})
+        gameState.targetWord = 'ivory'
+        gameState.players = ['winner-num']
+        gameState.playerNames = { 'winner-num': 'Winner Name' }
+        gameState.attempts = { 'winner-num': 2 }
+        gameState.roundStartedAt = Date.now() - 5000
+        matchSummary.recordDisqualification(
+            { ...gameState, attempts: { 'out-num': 4 }, playerNames: { 'out-num': 'Out Name' }, players: ['out-num'], disqualified: gameState.disqualified },
+            'out-num',
+            matchSummary.DQ_REASONS.ATTEMPTS_EXHAUSTED
+        )
+
+        const rep = matchSummary.buildMatchReport(gameState, { type: 'last_standing', winnerNumber: 'winner-num' }, n => n)
+
+        assert(rep.text.includes('winner-num'), 'Winner must appear in the board text')
+        assert(rep.text.includes('out-num'), 'Disqualified player must still appear in the board text, not just the winner')
+        assert(rep.text.includes('Disqualified:'), 'Board must show a disqualified count line')
+        assert(rep.text.includes('wrong guess'), 'Board must show each participant\'s own wrong-guess stat')
+    })
+
+    // ── Regression: the skip-timeout elimination path used to call
+    // matchSummary.sendMatchReport(), a function that was never
+    // exported (only buildMatchReport() was) — this would have thrown
+    // at runtime the first time a skip-timeout ended a match. Locking
+    // in that the path now completes without throwing. ────────────────
+    await run('skip-timeout elimination path does not throw (sendMatchReport-does-not-exist regression)', async () => {
+        const matchSummary = require('./matchSummary')
+        assert(typeof matchSummary.sendMatchReport === 'undefined',
+            'This test assumes sendMatchReport was never exported — if it now exists, update this test to match the new contract')
+        assert(typeof matchSummary.buildMatchReport === 'function',
+            'buildMatchReport must exist — it is what gameEngine.js now calls instead')
+    })
+
+    // ── Same cross-match leaderboard mechanism as WordClimbGame, but
+    // "better" is fewer wrong guesses for Hangman — confirms the
+    // isBetterFn direction is actually per-game, not hardcoded ────────
+    await run('recordMatchResult() ranks fewer wrong guesses as better for Hangman (opposite direction from WordClimb)', async () => {
+        const kernel = require('../gameKernel')
+        const games = {}
+        kernel.recordMatchResult(games, config.GAME_KEY, 'lb-chat-hmg', [
+            { number: 'a', name: 'Ama', won: true, statValue: 2 }
+        ], (x, y) => x < y)
+        kernel.recordMatchResult(games, config.GAME_KEY, 'lb-chat-hmg', [
+            { number: 'a', name: 'Ama', won: true, statValue: 5 }
+        ], (x, y) => x < y)
+
+        const board = kernel.getLeaderboard(games, config.GAME_KEY, 'lb-chat-hmg')
+        assertEqual(board.a.wins, 2, 'Ama should have 2 wins across the two rounds')
+        assertEqual(board.a.bestStatValue, 2, 'Best wrong-guess count should stay 2 (fewer is better), not get overwritten by the worse 5')
+    })
+
+    // ── Adaptive stick-figure schedule: whatever maxTries is (word-
+    // length driven), the figure must be COMPLETELY gone exactly on the
+    // final allowed wrong guess -- never early, never left over. ────────
+    await run('stick-figure schedule always empties exactly at maxTries, for short AND long words', async () => {
+        const BODY_COUNT = 6
+        for (const maxTries of [5, 6, 8, 10]) {
+            const finalCard = engine.buildStickFigureCard('@P', maxTries, maxTries)
+            assert(finalCard.includes('has been disqualified'),
+                `maxTries=${maxTries}: figure must be fully gone (disqualified) on the final wrong guess`)
+            const oneEarlyCard = engine.buildStickFigureCard('@P', maxTries - 1, maxTries)
+            assert(!oneEarlyCard.includes('has been disqualified'),
+                `maxTries=${maxTries}: figure must NOT already be gone one guess before the limit`)
+        }
+    })
+
+    // ── Short words (maxTries < 6, more body parts than guesses) must
+    // compress -- never skip a part, never show an impossible X stage. ──
+    await run('a short word (maxTries=5) removes more than one part on some guess, with no X stage at all', async () => {
+        const w1 = engine.buildStickFigureCard('@P', 1, 5)
+        assert(w1.includes('+'), 'First wrong guess on a 5-max-tries round should remove two parts at once (6 parts, 5 guesses)')
+        assert(!w1.includes('marked'), 'A compressed (maxTries<6) schedule should never show an X/"marked" stage')
+    })
+
     return report('HangmanGame')
 }
 

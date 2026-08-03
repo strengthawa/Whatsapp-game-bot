@@ -31,11 +31,14 @@ Answer these two questions. They decide almost everything else:
     publicCommands.js    ← REQUIRED (or fold into gameEngine.js — either works)
     matchSummary.js       ← OPTIONAL, only if there's a report worth building
     README.md            ← REQUIRED — this game's own rules + command list
+    tests.js             ← REQUIRED — see §10 below
     <anything else your game needs>
 ```
 
 `games-registry.js` discovers this folder automatically at boot — you
 never touch `index.js`, `games-registry.js`, or any other game's files.
+`scripts/run-tests.js` discovers `tests.js` the same way — you never
+touch that file either.
 
 ## 3. `config.js` — copy this shape exactly
 
@@ -76,6 +79,30 @@ const config = require('./config')
   (timeout-based) `gameEngine.js` for the two reference shapes.
 - **`forceStopActiveSession(chatId, ctx)`** — optional but recommended;
   see ARCHITECTURE.md §10.
+- **If your difficulty climbs along a numeric axis** (word length, round
+  number, anything that only goes up), use
+  `kernel.computeScaledSeconds({ current, min, max, startSeconds, floorSeconds })`
+  instead of a fixed turn timer — linear interpolation from
+  `startSeconds` at `min` down to `floorSeconds` at `max`, no per-level
+  table to hand-maintain. See `WordClimbGame/gameEngine.js`'s
+  `turnSecondsFor()` for the reference shape, including how it lets an
+  admin's fixed override win outright over the curve.
+- **For any duration you show on a board** (total match time, a
+  player's own time-on-clock), use `kernel.formatDuration(ms)` instead
+  of hand-rolling `padStart` math — mm:ss, or h:mm:ss past an hour.
+- **If you want to show players' own accumulated thinking time**, call
+  `kernel.markTurnStart(gameState)` when a turn is announced,
+  `kernel.markPauseStart(gameState)` / `kernel.markPauseEnd(gameState)`
+  around your existing pause/resume, and
+  `kernel.accumulateTurnTime(gameState, player, capMs)` when a turn
+  resolves (answered or timed out) — pause time is automatically
+  excluded, and `capMs` (pass your current turn's own timeout length)
+  stops a delayed callback from ever over-crediting. All state lives
+  under `gameState.turnStartedAt` / `pausedAt` / `pausedMsThisTurn` /
+  `answerTimeMs`, so multiple games in the same process never collide.
+  See `WordClimbGame/gameEngine.js` for the reference wiring and
+  `WordClimbGame/matchSummary.js` for how it's surfaced on the final
+  board.
 
 ## 5. `publicCommands.js` — the bare-acronym rule is non-negotiable
 
@@ -137,7 +164,30 @@ Never `sock.sendMessage` from inside this file. The caller
 (`publicCommands.js`) sends. See ARCHITECTURE.md §10.2 — this exact
 inconsistency (one game's `matchSummary.js` sent directly, another only
 returned) was a real bug found and fixed in this codebase; don't
-reintroduce it.
+reintroduce it. **Update, this session:** a second, missed instance of
+the same bug was found in `HangmanGame/gameEngine.js` — its skip-timeout
+elimination path was still calling a `matchSummary.sendMatchReport()`
+that had never actually been exported (only `buildMatchReport()` was),
+which would have thrown the first time that specific path fired live.
+Fixed to call `buildMatchReport()` + `sock.sendMessage()` directly, same
+as every other call site. Lesson: "this was fixed" doesn't mean every
+call site was checked — grep for the banned function name across the
+whole game folder, not just the file you're already looking at.
+
+- **Board shape convention**: every final board shows one stat line per
+  participant — winner included, not just a win/loss flag — and one
+  disqualified-count line, no dividers, no footer tip. See
+  `WordClimbGame/matchSummary.js` and `HangmanGame/matchSummary.js` for
+  the reference shape; a new game should match it rather than invent
+  its own report layout.
+- **Track a match "record" independently of who wins.** Don't assume the
+  winner automatically holds your game's best-stat record (longest
+  word, highest score, fastest time) — trace through whether an
+  eliminated player could out-perform the eventual winner on that one
+  stat before the match ended. `WordClimbGame`'s `longestWord` field is
+  the reference: updated on every qualifying event regardless of who
+  ends up winning, always shown on the board with credit to whoever
+  actually earned it.
 
 ## 8. `README.md` — what it must say, accurately
 
@@ -158,17 +208,67 @@ reintroduce it.
   (not covered by anything in `ARCHITECTURE.md`), add a section there
   too — don't leave future AI/devs to reverse-engineer it from your code.
 
-## 10. Before shipping
+## 10. `tests.js` — required, and it exists to catch YOUR assumptions
+
+Every past game folder shipped with an assumption that turned out
+false and was only found after a real deploy broke: Hangman's solo-game
+floor, WordClimb's hardcoded 2-player minimum, RoastGame's unenforced
+"DM only" claim. `tests.js` is the mechanism that makes those specific
+mistakes structurally impossible to repeat unnoticed — it is not
+generic boilerplate, it is where you encode the specific things you are
+assuming about your own game and prove them.
+
+```js
+const { makeCtx, run, assert, assertEqual, report, resetCounts } = require('../scripts/tests/_harness')
+const config = require('./config')
+const engine = require('./gameEngine')
+// ...require whatever else your tests exercise
+
+async function main() {
+    resetCounts()
+    console.log('YourGameName — behavioral tests')
+
+    await run('describe the assumption you are proving true', async () => {
+        // ...exercise engine/adminCommands/publicCommands, then assert()
+    })
+
+    return report()
+}
+
+module.exports = { main }
+```
+
+- Write one `run(...)` block per assumption you're making about your
+  own game — not generic smoke tests. Ask yourself: "what have I just
+  assumed is true without checking?" (minimum player count, who's
+  allowed to run a command, what happens on a duplicate start, what a
+  stateless vs stateful game does differently) — then write the test
+  that would fail if that assumption were wrong. See
+  `HangmanGame/tests.js`, `WordClimbGame/tests.js`, and
+  `RoastGame/tests.js` for the reference shape and the specific bugs
+  each one now locks in.
+- `scripts/run-tests.js` auto-discovers your `tests.js` by folder name
+  at run time — same mechanism `games-registry.js` uses for
+  `config.js`/`gameEngine.js`/`adminCommands.js`. You never edit
+  `scripts/run-tests.js`. If your folder has no `tests.js`, it's
+  flagged with a `⚠️ WARN` (not a silent skip, not a hard failure) so
+  a missing test file is always visible, never invisible.
+- `npm test` (or `node scripts/run-tests.js`) must be run and passing
+  before shipping, same as `npm run verify`.
+
+## 11. Before shipping
 
 ```
 npm run verify
+npm test
 ```
 
-Fix every ❌. This checks your `config.js` exports, your `getGameState`
-key isolation against every other loaded game, that
+Fix every ❌. `verify` checks your `config.js` exports, your
+`getGameState` key isolation against every other loaded game, that
 `package.json` declares anything you `require()`, and that your bare
-acronym never goes stateful. If it fails, the message tells you exactly
-which rule and which file.
+acronym never goes stateful. `test` runs your `tests.js` (auto-discovered,
+see §10) against every other game's — if it fails, the message tells you
+exactly which assumption broke and in which file.
 
 ---
 
@@ -186,5 +286,8 @@ which rule and which file.
 - [ ] Any privacy/delivery claim in the README is backed by a real
       code check
 - [ ] `package.json` has every npm package this game `require()`s
+- [ ] `tests.js` exists and encodes the specific assumptions this game
+      makes (not generic smoke tests)
 - [ ] `COMMAND_REFERENCE.md` §3 updated with this game's section
 - [ ] `npm run verify` passes with zero ❌
+- [ ] `npm test` passes with zero ❌

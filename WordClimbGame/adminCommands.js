@@ -68,9 +68,9 @@ async function handleAdminCommand(ctx) {
                 `› \`${config.ADMIN_PREFIX}stop\` — end the session, post the final board\n` +
                 `› \`${config.ADMIN_PREFIX}reset\` — hard reset, wipes session silently\n\n` +
                 `*Settings:*\n` +
-                `› \`${config.ADMIN_PREFIX}setturnseconds <10-90>\` — seconds per turn (next match)\n\n` +
+                `› \`${config.ADMIN_PREFIX}setturnseconds <10-90>\` — fixed override, replaces the auto shrink-as-you-climb curve\n\n` +
                 `*📊 Live Config:*\n` +
-                `› Turn Timer: *${resolveSetting(`${config.GAME_KEY}_turnSeconds`, settings, config.TURN_SECONDS)}s*\n` +
+                `› Turn Timer: *${engine.turnTimerDisplay(settings)}*\n` +
                 `› Length Range: *${config.MIN_LENGTH}–${config.MAX_LENGTH} letters*\n` +
                 `› Max Strikes: *${config.MAX_STRIKES}*\n\n` +
                 `${config.DIVIDER}\n` +
@@ -108,7 +108,7 @@ async function handleAdminCommand(ctx) {
                     `📊 *${config.GAME_ACRONYM} Bot Status*\n\n` +
                     `🎮 No game or lobby is currently active.\n\n` +
                     `*Config:*\n` +
-                    `› Turn Timer: *${resolveSetting(`${config.GAME_KEY}_turnSeconds`, settings, config.TURN_SECONDS)}s*`
+                    `› Turn Timer: *${engine.turnTimerDisplay(settings)}*`
             })
             return true
         }
@@ -133,7 +133,7 @@ async function handleAdminCommand(ctx) {
             statusText += `💢 Strikes so far: ${gameState.players.map(n => `${gameState.playerNames[n] || n} (${gameState.strikes[n] || 0}/${config.MAX_STRIKES})`).join(', ')}\n`
         }
         statusText += `\n*Config:*\n`
-        statusText += `› Turn Timer: *${resolveSetting(`${config.GAME_KEY}_turnSeconds`, settings, config.TURN_SECONDS)}s*`
+        statusText += `› Turn Timer: *${engine.turnTimerDisplay(settings)}*`
 
         await sendSafeMessage(sock, replyTo, { text: statusText })
         return true
@@ -223,7 +223,7 @@ async function handleAdminCommand(ctx) {
         }
         writeSetting(senderTier, `${config.GAME_KEY}_turnSeconds`, n, settings)
         await sendSafeMessage(sock, replyTo, {
-            text: `⚙️ Turn timer set to *${n}s* 💥 — takes effect on the *next* match, not the one in progress.`
+            text: `⚙️ Turn timer fixed at *${n}s* for every length 💥 — replaces the auto shrink-as-you-climb curve, takes effect on the *next* match.`
         })
         return true
     }

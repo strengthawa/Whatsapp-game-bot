@@ -23,6 +23,7 @@ const config = require('./config')
 const engine = require('./gameEngine')
 const adminCommands = require('./adminCommands')
 const publicCommands = require('./publicCommands')
+const matchSummary = require('./matchSummary')
 
 async function main() {
     resetCounts()
@@ -120,6 +121,90 @@ async function main() {
         assert(gameState.active === false, 'A 0-player lobby should never start a climb')
         const cancelMsg = ctx.sentMessages.find(m => m.text.includes('Not enough players'))
         assert(cancelMsg, 'Expected a "not enough players" message for a 0-player lobby, got none')
+    })
+
+    // ── Turn timer shrinks with length, following the curve exactly ──
+    // (the assumption behind "the timer shrinks as you climb" — if this
+    // silently stopped scaling, nothing else would catch it) ──────────
+    await run('turnSecondsFor() gives TURN_SECONDS_START at MIN_LENGTH and TURN_SECONDS_FLOOR at MAX_LENGTH', async () => {
+        const gameState = engine.freshState()
+        const settings = { creatorOverrides: {} }
+
+        gameState.currentLength = config.MIN_LENGTH
+        assertEqual(engine.turnSecondsFor(gameState, settings), config.TURN_SECONDS_START,
+            'Expected the full starting time at the easiest (shortest) length')
+
+        gameState.currentLength = config.MAX_LENGTH
+        assertEqual(engine.turnSecondsFor(gameState, settings), config.TURN_SECONDS_FLOOR,
+            'Expected the timer floor at the hardest (longest) length')
+    })
+
+    // ── An admin's fixed override must win outright over the curve —
+    // this is the back-compat contract for the existing /wcl
+    // setturnseconds command ───────────────────────────────────────
+    await run('a fixed /wcl setturnseconds override replaces the shrink curve entirely', async () => {
+        const gameState = engine.freshState()
+        gameState.currentLength = config.MAX_LENGTH // would be the floor under the curve
+        const settings = { creatorOverrides: {}, [`${config.GAME_KEY}_turnSeconds`]: 50 }
+        assertEqual(engine.turnSecondsFor(gameState, settings), 50,
+            'A fixed override must be used as-is, ignoring currentLength entirely')
+    })
+
+    // ── The actual bug this session found: a winner's bestLength is
+    // NOT guaranteed to be the match's longest word — an eliminated
+    // player can hold that record. buildFinalBoard() must track it
+    // independently of who wins, not derive it from the winner. ──────
+    await run('longest word of the match is credited correctly even when the winner never held it', async () => {
+        const gameState = engine.freshState()
+        gameState.players = ['winner-num']
+        gameState.playerNames = { 'winner-num': 'Quiet Winner', 'out-num': 'Early Achiever' }
+        gameState.bestLength = { 'winner-num': 0, 'out-num': 5 }
+        gameState.strikes = { 'winner-num': 0, 'out-num': 3 }
+        gameState.answerTimeMs = { 'winner-num': 500, 'out-num': 1000 }
+        gameState.longestWord = { word: 'apple', length: 5, number: 'out-num' }
+        gameState.eliminated = [{
+            number: 'out-num', name: 'Early Achiever', reason: 'wrong_guess',
+            atLength: 5, bestLength: 5, order: 1
+        }]
+        gameState.usedWords = {}
+        gameState.matchStartedAt = Date.now() - 1000
+
+        const rep = matchSummary.buildFinalBoard(gameState, 'winner-num', 'last_standing')
+
+        assert(rep.winner.bestLength < rep.longestWord.length,
+            'Test setup should reflect the winner NOT holding the record — otherwise this test proves nothing')
+        assertEqual(rep.longestWord.name, 'Early Achiever',
+            'Longest word must credit whoever actually achieved it, not be derived from the winner')
+
+        const text = matchSummary.renderFinalBoardText(rep)
+        assert(text.includes('Early Achiever'), 'Final board text must name the longest-word holder even though they lost')
+        assert(text.includes('Disqualified (1)'), 'Final board text must show the disqualified count')
+    })
+
+    // ── Cross-match leaderboard: wins/losses/streak persist across
+    // matches, and the personal-best column shows even for a losing
+    // player — the "pairing" requested alongside the leaderboard ────
+    await run('recordMatchResult() accumulates wins/losses/streak across matches, independent of any single match state', async () => {
+        const kernel = require('../gameKernel')
+        const games = {}
+        kernel.recordMatchResult(games, config.GAME_KEY, 'lb-chat', [
+            { number: 'a', name: 'Ama', won: true,  statValue: 5 },
+            { number: 'b', name: 'Bobo', won: false, statValue: 3 }
+        ], (x, y) => x > y)
+        kernel.recordMatchResult(games, config.GAME_KEY, 'lb-chat', [
+            { number: 'a', name: 'Ama', won: false, statValue: 4 },
+            { number: 'b', name: 'Bobo', won: true,  statValue: 7 }
+        ], (x, y) => x > y)
+
+        const board = kernel.getLeaderboard(games, config.GAME_KEY, 'lb-chat')
+        assertEqual(board.a.wins, 1, 'Ama should have 1 win across the two matches')
+        assertEqual(board.a.losses, 1, 'Ama should have 1 loss across the two matches')
+        assertEqual(board.a.bestStatValue, 5, "Ama's personal best should stay 5 (higher than her second match's 4), not get overwritten by a worse result")
+        assertEqual(board.b.bestStatValue, 7, "Bobo's personal best should update to 7 once he beats his earlier 3")
+
+        const text = kernel.renderLeaderboardText(games, config.GAME_KEY, 'lb-chat', { statLabel: 'L' })
+        assert(text.includes('Ama'), 'Leaderboard text must show every tracked player, not just the current top')
+        assert(text.includes('Bobo'), 'Leaderboard text must show every tracked player, not just the current top')
     })
 
     return report('WordClimbGame')

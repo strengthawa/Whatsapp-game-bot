@@ -2,8 +2,12 @@
 //
 // Standalone match-summary / disqualification module.
 // Pure bookkeeping + message formatting — never owns game state.
+// Final-board shape matches WordClimbGame/matchSummary.js's redesign:
+// one compact block, everyone's own stats (wrong guesses, won/lost),
+// no dividers, no footer tip. See WORDCLIMB_MESSAGE_REDESIGN.md.
 
 const config = require('./config')
+const kernel = require('../gameKernel')
 
 const DQ_REASONS = {
     SKIPPED_3:          'Skipped 3 turns in a row',
@@ -28,6 +32,7 @@ function recordDisqualification(gameState, number, reason = DQ_REASONS.SKIPPED_3
         number,
         name: gameState.playerNames[number] || number,
         reason,
+        wrongGuesses: (gameState.attempts && gameState.attempts[number]) || 0,
         eliminatedAt: new Date().toISOString()
     })
 
@@ -52,93 +57,112 @@ function checkLastPlayerStanding(gameState) {
 
 /**
  * Builds the full match report as a plain {text, mentions} object.
- * Never sends — the caller (publicCommands.js) owns sock.sendMessage,
- * same contract as WordClimbGame/matchSummary.js's buildFinalBoard().
- * This used to send directly (sendMatchReport), which meant the two
- * games' matchSummary modules had opposite contracts under the same
- * filename — a trap for anyone copying the pattern into game #4.
+ * Never sends — the caller owns sock.sendMessage, same contract as
+ * WordClimbGame/matchSummary.js's buildFinalBoard().
  * @param {function} tag — tag(number) → display string with role badge
  */
 function buildMatchReport(gameState, outcome, tag) {
     const disqualified = gameState.disqualified || []
+    const dur = kernel.formatDuration(Date.now() - (gameState.roundStartedAt || Date.now()))
 
+    // Every survivor's own wrong-guess count, same field a DQ'd player
+    // already carries — so the board shows one consistent stat for
+    // everyone, winner or not, not just a win/loss flag.
     const survivorEntries = gameState.players.map(number => ({
         number,
         name: gameState.playerNames[number] || number,
-        disqualified: false
+        disqualified: false,
+        wrongGuesses: (gameState.attempts && gameState.attempts[number]) || 0
     }))
     const dqEntries = disqualified.map(entry => ({
         number:       entry.number,
         name:         entry.name,
         disqualified: true,
-        reason:       entry.reason
+        reason:       entry.reason,
+        wrongGuesses: entry.wrongGuesses || 0
     }))
 
     const allParticipants   = [...survivorEntries, ...dqEntries]
-    const totalJoined       = allParticipants.length
     const totalDisqualified = dqEntries.length
 
-    let headerLine = '', winnerLine = '', winnerNumber = null
+    let winnerNumber = null, resultLine = ''
+    const wordUpper = gameState.targetWord ? gameState.targetWord.toUpperCase() : 'N/A'
 
     switch (outcome.type) {
         case 'winner_letter':
             winnerNumber = outcome.winnerNumber
-            headerLine   = `🏆 *${config.GAME_ACRONYM} MATCH COMPLETE*`
-            winnerLine   = `🎉 *Winner*\n✅ ${tag(winnerNumber)}`
+            resultLine = `🏆 ${tag(winnerNumber)} won! Word: ${wordUpper} · ⏱️ ${dur}`
             break
         case 'winner_instant':
             winnerNumber = outcome.winnerNumber
-            headerLine   = `🏆 *${config.GAME_ACRONYM} MATCH COMPLETE*`
-            winnerLine   = `🎉 *Winner (Instant Word Guess)*\n✅ ${tag(winnerNumber)}`
+            resultLine = `⚡ ${tag(winnerNumber)} won with an instant full-word guess! ${wordUpper} · ⏱️ ${dur}`
             break
         case 'last_standing':
             winnerNumber = outcome.winnerNumber
-            headerLine   = `🏆 *${config.GAME_ACRONYM} MATCH COMPLETE*`
-            winnerLine   = `🎉 *Winner (Last Player Standing)*\n✅ ${tag(winnerNumber)}\n_All other players were disqualified._`
+            resultLine = `🏆 ${tag(winnerNumber)} won — last one standing! Word: ${wordUpper} · ⏱️ ${dur}`
             break
         case 'no_winner':
         default:
-            headerLine = `🛑 *${config.GAME_ACRONYM} MATCH COMPLETE*`
-            winnerLine = `😶 *No Winner*\nThe round ended with no surviving player.`
+            resultLine = `💀 Nobody survived — word was ${wordUpper} · ⏱️ ${dur}`
             break
     }
 
-    const participantLines = []
-    if (winnerNumber) participantLines.push(`✅ ${tag(winnerNumber)} (Winner)`)
+    // Everyone's own stat line — winner first, then survivors, then
+    // eliminated in the order they went out. One consistent shape per
+    // person regardless of outcome, mirroring WordClimb's board.
+    const statLines = []
+    const winnerEntry = allParticipants.find(p => p.number === winnerNumber)
+    if (winnerEntry) {
+        statLines.push(`🏆 ${tag(winnerEntry.number)} — ${winnerEntry.wrongGuesses} wrong guess${winnerEntry.wrongGuesses === 1 ? '' : 'es'}`)
+    }
     for (const entry of allParticipants) {
         if (entry.number === winnerNumber) continue
-        const mark   = entry.disqualified ? '❌' : '✅'
-        const suffix = entry.disqualified ? ` (DQ: ${entry.reason})` : ''
-        participantLines.push(`${mark} ${tag(entry.number)}${suffix}`)
+        if (entry.disqualified) {
+            statLines.push(`💀 ${tag(entry.number)} — out (${entry.reason}), ${entry.wrongGuesses} wrong guess${entry.wrongGuesses === 1 ? '' : 'es'}`)
+        } else {
+            statLines.push(`✅ ${tag(entry.number)} — ${entry.wrongGuesses} wrong guess${entry.wrongGuesses === 1 ? '' : 'es'}`)
+        }
     }
 
-    const wordLine = gameState.targetWord ? gameState.targetWord.toUpperCase() : 'N/A'
-
-    const report =
-        `${config.DIVIDER}\n` +
-        `${config.BOT_EMOJI} ${headerLine}\n` +
-        `${config.DIVIDER}\n\n` +
-        `${winnerLine}\n\n` +
-        `👥 *Participants*\n${participantLines.join('\n') || '[None]'}\n\n` +
-        `🔤 *Word*\n${wordLine}\n\n` +
-        `📊 *Match Statistics*\n` +
-        `Players Joined: ${totalJoined}\n` +
-        `Disqualified: ${totalDisqualified}\n` +
-        `Winner: ${winnerNumber ? 1 : 0}\n\n` +
-        `${config.DIVIDER}\n` +
-        `_Sky Graphics — ${config.GAME_NAME}_`
+    const lines = [resultLine]
+    if (statLines.length > 0) lines.push(...statLines)
+    if (totalDisqualified > 0) lines.push(`🚫 Disqualified: ${totalDisqualified}/${allParticipants.length}`)
 
     const mentionSet = new Set()
     for (const p of allParticipants) {
         const jid = (gameState.playerJids && gameState.playerJids[p.number]) || `${p.number}@s.whatsapp.net`
         mentionSet.add(jid)
     }
-    if (winnerNumber) {
-        const winnerJid = (gameState.playerJids && gameState.playerJids[winnerNumber]) || `${winnerNumber}@s.whatsapp.net`
-        mentionSet.add(winnerJid)
-    }
 
-    return { text: report, mentions: [...mentionSet] }
+    return { text: lines.join('\n'), mentions: [...mentionSet] }
 }
 
-module.exports = { DQ_REASONS, recordDisqualification, checkLastPlayerStanding, buildMatchReport }
+/**
+ * Records this match's result into the cross-match leaderboard (see
+ * gameKernel.js — opt-in, per game per chat, survives across matches).
+ * Fewer wrong guesses is "better" for Hangman's personal-best column.
+ * Call once, right after buildMatchReport(), at every match-ending
+ * call site (there are several — winner by letter, instant word guess,
+ * last standing, no winner).
+ */
+function recordLeaderboard(games, chatId, gameState, outcome) {
+    const disqualified = gameState.disqualified || []
+    const participants = [
+        ...gameState.players.map(number => ({
+            number,
+            name: gameState.playerNames[number] || number,
+            won: number === outcome.winnerNumber,
+            statValue: (gameState.attempts && gameState.attempts[number]) || 0
+        })),
+        ...disqualified.map(entry => ({
+            number: entry.number,
+            name: entry.name,
+            won: false,
+            statValue: entry.wrongGuesses || 0
+        }))
+    ]
+    if (participants.length === 0) return
+    kernel.recordMatchResult(games, config.GAME_KEY, chatId, participants, (a, b) => a < b)
+}
+
+module.exports = { DQ_REASONS, recordDisqualification, checkLastPlayerStanding, buildMatchReport, recordLeaderboard }

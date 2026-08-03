@@ -45,10 +45,11 @@ function buildHelpText(receivedAt) {
         `1️⃣ Type *${config.PREFIX} start* to open a lobby\n` +
         `2️⃣ Type *${config.PREFIX} join* to enter it\n` +
         `3️⃣ On your turn, the bot gives you a starting *letter* + required *length* — reply with a real word matching both\n` +
-        `4️⃣ You have *${config.TURN_SECONDS} seconds*. Timeout, wrong word, or a repeat = a strike\n` +
+        `4️⃣ Reply before time's up — the timer shrinks as the length climbs (*${config.TURN_SECONDS_START}s → ${config.TURN_SECONDS_FLOOR}s*). Timeout, wrong word, or a repeat = a strike\n` +
         `5️⃣ *${config.MAX_STRIKES} strikes* and you're eliminated 🚫\n` +
         `6️⃣ Last climber standing wins — or if everyone survives to the top, the *longest word reached* wins 🏆\n` +
-        `📖 Type *${config.PREFIX} help* any time to see this again.\n\n` +
+        `📖 Type *${config.PREFIX} help* any time to see this again.\n` +
+        `🏆 Type *${config.PREFIX} leaderboard* to see this chat's standings.\n\n` +
         `${config.DIVIDER}\n` +
         `_Sky Graphics — ${config.GAME_NAME}_`
     )
@@ -141,6 +142,16 @@ async function handlePublicMessage(msgCtx) {
     // any joined player once 2+ had joined; that's now an admin call, and
     // the floor is config.MIN_PLAYERS_TO_BEGIN (currently 1) instead of a
     // hardcoded 2.
+
+    if (subCmd === 'leaderboard' || subCmd === 'lb') {
+        const text = kernel.renderLeaderboardText(games, config.GAME_KEY, from, {
+            title: `🏆 *${config.GAME_NAME} — Leaderboard*`,
+            statLabel: 'L',
+            emptyText: `No climbs recorded yet in this chat — type *${config.PREFIX} start* to begin!`
+        })
+        await sock.sendMessage(from, { text })
+        return true
+    }
 
     // Unrecognised !wcl subcommand — now explicit (was silent here and
     // in HangmanGame; both fixed together, matching RoastGame's public

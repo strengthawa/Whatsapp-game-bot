@@ -38,6 +38,9 @@ module.exports = {
     // report) use BOT_EMOJI + DIVIDER for an instantly-recognizable
     // header/footer band. Quick transactional replies (single-line
     // confirmations, errors) skip this and stay minimal on purpose.
-    BOT_EMOJI:  '🤖',
+    // Hangman's own palette (gallows/elimination themed) is deliberately
+    // distinct from WordClimb's 🧗 so the two games never look alike
+    // in a shared chat feed.
+    BOT_EMOJI:  '💀',
     DIVIDER:    '━━━━━━━━━━━━━━━━━━━━━━'
 }

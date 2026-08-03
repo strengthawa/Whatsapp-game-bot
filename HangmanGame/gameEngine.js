@@ -109,51 +109,82 @@ function adjustNextWordLength(gameState, outcome) {
     )
 }
 
-// ─── Stick figure ASCII art — 10 atomic damage stages ───────────
-// Locked-in design: legs first, each limb gets a "hit" sub-stage
-// before it's fully "gone", so there are 10 distinct art states —
-// matching config's max possible maxTries (10). Because there are
-// never fewer stages than possible wrong guesses, no two wrong
-// guesses in a row can ever render the identical picture.
+// ─── Stick figure ASCII art — adaptive to word length ───────────
+// 6 body parts, removed one guess at a time: Right Leg, Left Leg,
+// Right Arm, Left Arm, Torso, Head (head gone = disqualified).
 //
-// Order: Right Leg hit→gone → Left Leg hit→gone → Right Arm hit→gone
-//        → Left Arm hit→gone → Torso gone → Head gone (disqualified)
-//
-// Each part has 3 states: whole ('/', '\', '|', 'O') → hit ('x') → gone (' ').
-const STICK_STAGES = [
-    // stage 0 = full figure (used only for reference / round start, never sent as a "loss" frame)
-    { rleg: 'w', lleg: 'w', rarm: 'w', larm: 'w', torso: 'w', head: 'w', part: null,        state: null   },
-    { rleg: 'x', lleg: 'w', rarm: 'w', larm: 'w', torso: 'w', head: 'w', part: 'Right Leg', state: 'hit'  },
-    { rleg: 'g', lleg: 'w', rarm: 'w', larm: 'w', torso: 'w', head: 'w', part: 'Right Leg', state: 'gone' },
-    { rleg: 'g', lleg: 'x', rarm: 'w', larm: 'w', torso: 'w', head: 'w', part: 'Left Leg',  state: 'hit'  },
-    { rleg: 'g', lleg: 'g', rarm: 'w', larm: 'w', torso: 'w', head: 'w', part: 'Left Leg',  state: 'gone' },
-    { rleg: 'g', lleg: 'g', rarm: 'x', larm: 'w', torso: 'w', head: 'w', part: 'Right Arm', state: 'hit'  },
-    { rleg: 'g', lleg: 'g', rarm: 'g', larm: 'w', torso: 'w', head: 'w', part: 'Right Arm', state: 'gone' },
-    { rleg: 'g', lleg: 'g', rarm: 'g', larm: 'x', torso: 'w', head: 'w', part: 'Left Arm',  state: 'hit'  },
-    { rleg: 'g', lleg: 'g', rarm: 'g', larm: 'g', torso: 'w', head: 'w', part: 'Left Arm',  state: 'gone' },
-    { rleg: 'g', lleg: 'g', rarm: 'g', larm: 'g', torso: 'g', head: 'w', part: 'Torso',     state: 'gone' },
-    { rleg: 'g', lleg: 'g', rarm: 'g', larm: 'g', torso: 'g', head: 'g', part: 'Head',      state: 'gone' }
-]
+// The schedule adapts to THIS round's maxTries (word-length driven,
+// 5-10 in auto mode) instead of assuming a fixed 10 wrong guesses:
+//   - maxTries >= 6: the first (maxTries-6) parts each get an X
+//     ("hit") guess before their own "gone" guess; any parts beyond
+//     that go straight from whole to gone in one guess. At exactly
+//     maxTries===6, every part goes straight to gone -- no X shown
+//     anywhere, since there's no guess to spare for a warning.
+//   - maxTries < 6: there are MORE parts than guesses, so a single
+//     wrong guess removes more than one part at once (never skips a
+//     part, never leaves one dangling) -- guaranteed to reach exactly
+//     zero parts remaining on the final guess, whatever maxTries is.
+// Either way, the last wrong guess always empties the figure -- the
+// body is never "left over" after elimination, and never runs out
+// before it.
+const BODY_PARTS = ['Right Leg', 'Left Leg', 'Right Arm', 'Left Arm', 'Torso', 'Head']
 
 const PART_EMOJI = {
     'Right Leg': '🦵', 'Left Leg': '🦵', 'Right Arm': '💪', 'Left Arm': '💪',
     'Torso': '🫥', 'Head': '💀'
 }
 
-function renderChar(code, whole, hit) {
-    if (code === 'w') return whole
-    if (code === 'x') return hit
+function buildStickSchedule(maxTries) {
+    const schedule = []
+    if (maxTries >= BODY_PARTS.length) {
+        const extra = Math.min(maxTries - BODY_PARTS.length, BODY_PARTS.length)
+        BODY_PARTS.forEach((part, i) => {
+            if (i < extra) schedule.push({ hit: part })
+            schedule.push({ gone: [part] })
+        })
+    } else {
+        let goneSoFar = 0
+        for (let g = 1; g <= maxTries; g++) {
+            const goalGone = Math.min(BODY_PARTS.length, Math.ceil((g * BODY_PARTS.length) / maxTries))
+            schedule.push({ gone: BODY_PARTS.slice(goneSoFar, goalGone) })
+            goneSoFar = goalGone
+        }
+    }
+    return schedule
+}
+
+// Replays the schedule up through wrongCount guesses and returns the
+// per-part state ('whole' | 'hit' | 'gone') plus the event that
+// happened on THIS exact guess (for the caption).
+function computeBodyState(wrongCount, maxTries) {
+    const schedule = buildStickSchedule(maxTries)
+    const state = {}
+    BODY_PARTS.forEach(p => { state[p] = 'whole' })
+
+    const clamped = Math.max(0, Math.min(wrongCount, schedule.length))
+    let lastEvent = null
+    for (let i = 0; i < clamped; i++) {
+        const ev = schedule[i]
+        if (ev.hit) state[ev.hit] = 'hit'
+        if (ev.gone) ev.gone.forEach(p => { state[p] = 'gone' })
+        if (i === clamped - 1) lastEvent = ev
+    }
+    return { state, lastEvent }
+}
+
+function renderPart(status, whole, hit) {
+    if (status === 'whole') return whole
+    if (status === 'hit') return hit
     return ' ' // gone
 }
 
-function buildStickFigureArt(stage) {
-    const s     = STICK_STAGES[Math.max(0, Math.min(10, stage))]
-    const head  = renderChar(s.head,  'O', 'x')
-    const larm  = renderChar(s.larm,  '/', 'x')
-    const torso = renderChar(s.torso, '|', 'x')
-    const rarm  = renderChar(s.rarm,  '\\', 'x')
-    const lleg  = renderChar(s.lleg,  '/', 'x')
-    const rleg  = renderChar(s.rleg,  '\\', 'x')
+function buildStickFigureArt(state) {
+    const head  = renderPart(state['Head'],       'O',  'x')
+    const larm  = renderPart(state['Left Arm'],    '/',  'x')
+    const torso = renderPart(state['Torso'],       '|',  'x')
+    const rarm  = renderPart(state['Right Arm'],   '\\', 'x')
+    const lleg  = renderPart(state['Left Leg'],    '/',  'x')
+    const rleg  = renderPart(state['Right Leg'],   '\\', 'x')
     return (
         ` ______\n` +
         ` |    |\n` +
@@ -164,33 +195,42 @@ function buildStickFigureArt(stage) {
     )
 }
 
-// Maps wrongCount/maxTries onto one of the 10 stages. Math.round keeps
-// the sequence strictly increasing (and always distinct) for every
-// maxTries from 5–10, and the final wrong guess always lands exactly
-// on stage 10 (head gone / disqualified).
-function resolveStickStage(wrongCount, maxTries) {
-    const raw = Math.round((wrongCount / Math.max(1, maxTries)) * 10)
-    return Math.max(1, Math.min(10, raw))
+// One-time intro card -- sent the first time a player is up, so they
+// see their full, untouched figure before losing anything.
+function buildStickFigureIntro(playerTag) {
+    const wholeState = {}
+    BODY_PARTS.forEach(p => { wholeState[p] = 'whole' })
+    const art = buildStickFigureArt(wholeState)
+    return (
+        `🪢 *${playerTag}* -- this is you. Lose a body part with every wrong guess:\n` +
+        '```' + art + '```\n' +
+        `Lose it all → you're out. Good luck! 🎯`
+    )
 }
 
 // Group-chat card: tagged with the player's name + strike count, sent
-// the moment THIS player misses — dynamic and per-player, replacing
-// the old private-DM-only behaviour.
+// the moment THIS player misses -- dynamic and per-player.
 function buildStickFigureCard(playerTag, wrongCount, maxTries) {
-    const stage     = resolveStickStage(wrongCount, maxTries)
-    const s         = STICK_STAGES[stage]
-    const art       = buildStickFigureArt(stage)
-    const emoji     = PART_EMOJI[s.part] || '💥'
-    const captionOp = s.state === 'gone'
-        ? `gone!${s.part === 'Head' ? ' Disqualified 💀' : ''}`
-        : 'hit!'
+    const { state, lastEvent } = computeBodyState(wrongCount, maxTries)
+    const art = buildStickFigureArt(state)
     const remaining = Math.max(0, maxTries - wrongCount)
+    const allGone = BODY_PARTS.every(p => state[p] === 'gone')
+
+    let eventLine
+    if (lastEvent && lastEvent.hit) {
+        eventLine = `${PART_EMOJI[lastEvent.hit]} *${lastEvent.hit} marked — one more miss and it's gone!*`
+    } else if (lastEvent && lastEvent.gone && lastEvent.gone.length > 0) {
+        const label = lastEvent.gone.join(' + ')
+        eventLine = `${PART_EMOJI[lastEvent.gone[0]]} *Lost: ${label} — gone!*`
+    } else {
+        eventLine = `💥 *Miss!*`
+    }
 
     return (
         `💀 *${playerTag} — Strike ${wrongCount}/${maxTries}!*\n\n` +
         '```' + art + '```\n' +
-        `${emoji} *Lost: ${s.part} — ${captionOp}*\n` +
-        (stage >= 10
+        `${eventLine}\n` +
+        (allGone
             ? `Figure is gone — *${playerTag}* has been disqualified. 🚫`
             : `${remaining} wrong guess${remaining === 1 ? '' : 'es'} left before elimination. Hang in there! 🙌`)
     )
@@ -225,6 +265,7 @@ function getGameState(chatId, games) {
             playerJids:        {},
             skipStreaks:       {},
             disqualified:      [],
+            introShown:        {}, // { [number]: true } — one-time full-figure intro per player, per lobby/round
             currentTurnIndex:  0,
             paused:            false,
             wordLengthTarget:  config.START_WORD_LENGTH,
@@ -289,6 +330,7 @@ async function openFreshLobby(chatId, ctx) {
     gameState.playerJids       = {}
     gameState.skipStreaks      = {}
     gameState.disqualified     = []
+    gameState.introShown       = {}
 
     const creatorEnvJid   = process.env.CREATOR_JID || ''
     const creatorNum      = creatorEnvJid ? creatorEnvJid.split('@')[0].split(':')[0] : ''
@@ -357,6 +399,7 @@ async function startActualGame(chatId, ctx) {
     gameState.active           = true
     gameState.paused           = false
     gameState.roundMaxTries    = resolveRoundMaxTries(gameState.targetWord, settings)
+    gameState.roundStartedAt   = Date.now()
 
     const lobbyMentions = gameState.players.map(num => gameState.playerJids[num]).filter(Boolean)
     const lobbyText = gameState.players
@@ -365,13 +408,8 @@ async function startActualGame(chatId, ctx) {
 
     await sock.sendMessage(chatId, {
         text:
-            `${config.DIVIDER}\n` +
-            `${config.BOT_EMOJI} *Lobby Closed — Game On!*\n` +
-            `${config.DIVIDER}\n\n` +
-            `📏 *Word length:* ${gameState.targetWord.length} letters\n` +
-            `💥 *Attempts per player:* ${gameState.roundMaxTries}\n\n` +
-            `👥 *Final Player Lineup:*\n${lobbyText}\n\n` +
-            `🏆 May the best guesser win!`,
+            `💀 Game on! ${gameState.targetWord.length} letters · ${gameState.roundMaxTries} attempts each\n` +
+            `👥 ${lobbyText}`,
         mentions: lobbyMentions
     })
 
@@ -408,20 +446,23 @@ async function sendGameBoard(chatId, actionFeedback = '', extraMentions = [], ct
     const playerAttempts = gameState.attempts[currentPlayerNumber] || 0
     const attemptsLeft   = roundMaxTries - playerAttempts
 
+    if (!gameState.introShown[currentPlayerNumber]) {
+        gameState.introShown[currentPlayerNumber] = true
+        await sock.sendMessage(chatId, {
+            text: buildStickFigureIntro(currentPlayerName),
+            mentions: currentPlayerJid ? [currentPlayerJid] : []
+        })
+        if (typeof persistGames === 'function') persistGames()
+    }
+
     let boardText = ''
     if (actionFeedback) boardText += `${actionFeedback}\n\n`
 
-    boardText += `🎮 *${config.GAME_NAME} (${config.GAME_ACRONYM})*\n`
-    boardText += `📝 Word: \`${gameState.hiddenWord.join(' ')}\` *(${gameState.targetWord.length} letters)*\n`
-    boardText += `💥 *${currentPlayerName}'s attempts left: ${attemptsLeft}/${roundMaxTries}*\n\n`
-    boardText += `🎯 *Your turn:* ${currentPlayerName}\n`
-
-    if (hasMultiplePlayers) {
-        boardText += `⏭️ *Up next:* ${nextPlayerName}\n\n`
-    } else {
-        boardText += `🕹️ Playing solo — no pressure... just all of it 😄\n\n`
-    }
-    boardText += `_⏱️ You have ${config.TURN_SECONDS} seconds — guess a letter or the full word!_`
+    boardText += `\`${gameState.hiddenWord.join(' ')}\` (${gameState.targetWord.length} letters)\n`
+    boardText += hasMultiplePlayers
+        ? `🎯 ${currentPlayerName} (${attemptsLeft}/${roundMaxTries} left) — next: ${nextPlayerName}\n`
+        : `🎯 ${currentPlayerName} (${attemptsLeft}/${roundMaxTries} left) — solo run 😄\n`
+    boardText += `⏳ ${config.TURN_SECONDS}s — guess a letter or the full word`
 
     const mentionJids = [...new Set([
         ...(currentPlayerJid ? [currentPlayerJid] : []),
@@ -473,21 +514,18 @@ function startTurnCountdown(chatId, ctx) {
                 delete gameState.skipStreaks[currentPlayerNumber]
                 delete gameState.attempts[currentPlayerNumber]
 
-                const dqText =
-                    `🚫 *Disqualified!*\n` +
-                    `*${currentPlayerName}* skipped *3 turns in a row* and has been removed. 👋`
+                const dqText = `🚫 ${currentPlayerName} skipped 3 turns in a row — *removed* 👋`
 
                 const lastStanding = matchSummary.checkLastPlayerStanding(gameState)
                 if (lastStanding) {
                     gameState.active = false
                     await sock.sendMessage(chatId, {
-                        text:
-                            `${dqText}\n\n` +
-                            `🏆 *LAST PLAYER STANDING!*\n` +
-                            `The word was *${gameState.targetWord.toUpperCase()}*. 🎉`
+                        text: `${dqText}\n🏆 *Last player standing!* The word was *${gameState.targetWord.toUpperCase()}*. 🎉`
                     })
                     const outcome = { type: 'last_standing', winnerNumber: lastStanding }
-                    await matchSummary.sendMatchReport(sock, chatId, gameState, outcome, (n) => nameTag(n, gameState.playerNames, settings))
+                    const rep = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, gameState.playerNames, settings))
+                    matchSummary.recordLeaderboard(games, chatId, gameState, outcome)
+                    await sock.sendMessage(chatId, { text: rep.text, mentions: rep.mentions })
                     adjustNextWordLength(gameState, outcome)
                     gameState.players = []
                     persistGames()
@@ -498,10 +536,12 @@ function startTurnCountdown(chatId, ctx) {
                 if (gameState.players.length === 0) {
                     gameState.active = false
                     await sock.sendMessage(chatId, {
-                        text: `${dqText}\n\n💀 *GAME OVER!* No players remain. The word was *${gameState.targetWord.toUpperCase()}*.`
+                        text: `${dqText}\n💀 *Game over* — no players remain. The word was *${gameState.targetWord.toUpperCase()}*.`
                     })
                     const outcome = { type: 'no_winner' }
-                    await matchSummary.sendMatchReport(sock, chatId, gameState, outcome, (n) => nameTag(n, gameState.playerNames, settings))
+                    const rep = matchSummary.buildMatchReport(gameState, outcome, (n) => nameTag(n, gameState.playerNames, settings))
+                    matchSummary.recordLeaderboard(games, chatId, gameState, outcome)
+                    await sock.sendMessage(chatId, { text: rep.text, mentions: rep.mentions })
                     adjustNextWordLength(gameState, outcome)
                     persistGames()
                     await startCooldown(chatId, ctx)
@@ -516,10 +556,7 @@ function startTurnCountdown(chatId, ctx) {
             const nextTurnIndex = (gameState.currentTurnIndex + 1) % gameState.players.length
             gameState.currentTurnIndex = nextTurnIndex
 
-            const feedback =
-                `⏰ *Timeout!*\n` +
-                `*${currentPlayerName}* took too long. ` +
-                `(${skipCount}/3 strikes before lockout 🟥)`
+            const feedback = `⏰ ${currentPlayerName} timed out (${skipCount}/3 skip-strikes) 🟥`
 
             await sendGameBoard(chatId, feedback, [], ctx)
 
@@ -655,6 +692,7 @@ module.exports = {
     pickWordForLength,
     adjustNextWordLength,
     buildStickFigureCard,
+    buildStickFigureIntro,
     pauseSession,
     resumeSession,
     forceStopActiveSession
