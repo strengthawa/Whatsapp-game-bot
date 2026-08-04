@@ -207,6 +207,48 @@ async function main() {
         assert(text.includes('Bobo'), 'Leaderboard text must show every tracked player, not just the current top')
     })
 
+    // ── Regression: required length is a MINIMUM, not exact ──────
+    // isValidWord() used to reject any word whose length wasn't an
+    // exact match to the rung — a longer real word (e.g. "orange" at
+    // a 3-letter rung) was wrongly rejected as if it weren't a real
+    // word at all, when it just exceeded the minimum. Also confirms
+    // the dictionary lookup uses the WORD's own length, not the rung.
+    await run('isValidWord() accepts a real word longer than the required minimum', async () => {
+        const wordBank = require('./wordBank')
+        const longWord = wordBank.lettersWithWordsAt(6)[0]
+        assert(longWord, 'Test assumes at least one 6-letter starting letter exists in the dictionary')
+        const sample = wordBank.DICTIONARY[6][longWord][0]
+
+        assert(wordBank.isValidWord(sample, 3, longWord, []), `"${sample}" is a real ${sample.length}-letter word starting with "${longWord}" — it must satisfy a 3-letter-MINIMUM rung, not be rejected for not being exactly 3`)
+        assert(!wordBank.isValidWord(sample, sample.length + 1, longWord, []), 'The same word must still fail a rung that requires MORE letters than it has')
+    })
+
+    // ── Regression: turns must show periodic "Xs left" ticks ──────
+    // The turn timer used to fire once, silently, after the full
+    // duration — no feedback in between. Now it should post a
+    // "seconds left" update every 5s.
+    await run('an active turn posts a "seconds left" tick every 5s', async () => {
+        const chatId = 'test-chat-tick@g.us'
+        const ctx = makeCtx()
+        const gameState = engine.getGameState(chatId, ctx.games)
+        gameState.players = ['15551111111']
+        gameState.playerNames = { '15551111111': 'Ama' }
+        gameState.playerJids = { '15551111111': '15551111111@s.whatsapp.net' }
+        gameState.active = true
+        gameState.turnOrder = ['15551111111']
+        gameState.turnIndex = 0
+        gameState.currentPlayer = '15551111111'
+        gameState.currentLetter = 'd'
+        gameState.currentLength = config.MIN_LENGTH
+        gameState.strikes = { '15551111111': 0 }
+        gameState.turnSecondsLeft = 6
+
+        await engine.tickTurnTimer(chatId, ctx) // 6 -> 5, a tick multiple of 5
+        const tick = ctx.sentMessages.find(m => /left/.test(m.text))
+        assert(tick, `Expected a "seconds left" tick message at 5s remaining. Sent: ${JSON.stringify(ctx.sentMessages.map(m => m.text))}`)
+        assert(tick.text.includes('5s'), `Tick message should report 5s left, got: "${tick.text}"`)
+    })
+
     return report('WordClimbGame')
 }
 

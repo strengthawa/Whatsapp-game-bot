@@ -124,7 +124,12 @@ let settings = {
     publicCanStart:   false,
     activeGame:       'hangman',   // which game module is currently live
     adminGameAccess:  'all',       // which game(s) the confirmed admin may operate
-    showRoleTags:     true         // bot-wide (Creator)/(Admin) tag on nameTag(), see permissions.js
+    // (Creator)/(Admin) name tags are two INDEPENDENT flags, not one
+    // shared toggle — the creator can only see/set their own tag, the
+    // admin can only see/set theirs. See permissions.js nameTag() and
+    // "/game roletags" in game-switch-commands.js.
+    creatorRoleTag:   true,
+    adminRoleTag:     true
 }
 
 // Note: pending admin-change state used to live here as a shared ref
@@ -139,7 +144,15 @@ if (fs.existsSync(SETTINGS_FILE)) {
     if (typeof settings.publicCanStart  === 'undefined') settings.publicCanStart  = false
     if (typeof settings.activeGame      === 'undefined') settings.activeGame      = 'hangman'
     if (typeof settings.adminGameAccess === 'undefined') settings.adminGameAccess = 'all'
-    if (typeof settings.showRoleTags    === 'undefined') settings.showRoleTags    = true
+    // Migrate the old single shared "showRoleTags" flag (if present)
+    // into the two new independent per-tier flags, then drop it.
+    if (typeof settings.creatorRoleTag === 'undefined') {
+        settings.creatorRoleTag = typeof settings.showRoleTags === 'boolean' ? settings.showRoleTags : true
+    }
+    if (typeof settings.adminRoleTag === 'undefined') {
+        settings.adminRoleTag = typeof settings.showRoleTags === 'boolean' ? settings.showRoleTags : true
+    }
+    delete settings.showRoleTags
 }
 
 function saveSettings() {

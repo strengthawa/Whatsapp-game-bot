@@ -145,26 +145,33 @@ function describeGameAccess(settings) {
  * Returns a display tag using the person's name + role badge if applicable.
  * Never shows a number or JID.
  *
- * Role badges are gated by `settings.showRoleTags` — a bot-wide, unprefixed
- * flag (defaults to true, preserving prior behavior). It lives here, not
+ * The (Creator) and (Admin) badges are gated by TWO INDEPENDENT flags —
+ * `settings.creatorRoleTag` and `settings.adminRoleTag` — not one shared
+ * toggle. Each tier only ever sees or sets its own flag (enforced in
+ * "/game roletags", game-switch-commands.js): the creator cannot turn
+ * the admin's tag off, and the admin cannot touch the creator's. Both
+ * default to true, preserving prior behavior. This lives here, not
  * per-game, because every game module imports this same function; a
  * per-game toggle would need duplicating in every config.js and would
  * inevitably drift out of sync across games.
  */
 function nameTag(number, nameCache, settings) {
     const name = (nameCache && nameCache[number]) || 'Player'
-    const showTags = !settings || settings.showRoleTags !== false
-
-    if (!showTags) return name
 
     const creatorJid = process.env.CREATOR_JID || ''
     const creatorNum = creatorJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '')
     const clean      = (number || '').replace(/[^0-9]/g, '')
 
-    if (creatorNum && clean === creatorNum) return `${name} (Creator)`
+    if (creatorNum && clean === creatorNum) {
+        const showCreatorTag = !settings || settings.creatorRoleTag !== false
+        return showCreatorTag ? `${name} (Creator)` : name
+    }
 
     const adminNum = ((settings && settings.adminNumber) || '').replace(/[^0-9]/g, '')
-    if (adminNum && clean === adminNum) return `${name} (Admin)`
+    if (adminNum && clean === adminNum) {
+        const showAdminTag = !settings || settings.adminRoleTag !== false
+        return showAdminTag ? `${name} (Admin)` : name
+    }
 
     return name
 }

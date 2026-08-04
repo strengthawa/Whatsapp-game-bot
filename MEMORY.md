@@ -164,6 +164,23 @@ a group chat, not giving it sustained focus. Judge games on:
   guarantee unenforced in code — `!roast me` in a group leaked into the
   group) is now fixed: a DM/group check gates delivery before any
   profile lookup runs.
+- **Guess My Number (`guessmynumber`, `!gmn`/`/gmn`)** — free-for-all,
+  not turn-based; anyone can guess any time. Best-of-`N` rounds
+  (default 5), Higher/Lower + coarse Hot/Cold proximity tiers (never a
+  raw percentage — stops interpolation-search sniping), range/guess-cap/
+  round-timer all scale together with lobby size. 3 modes (Classic
+  1–100, Speed Run 1–50, Mega Grid 1–1000). Later given a **chaos
+  system** (`/gmn chaos off|light|full`) — one admin dial, not a
+  feature checklist; the engine itself autonomously rolls which event
+  fires (bounty rounds, a sabotage guess-cap tax, a hidden cursed
+  number), on whom, and when, plus a rare whole-match Team Chaos split
+  for bigger lobbies and end-of-match titles (Sniper/Ice Cold/Closest
+  Call) derived from stats already tracked. This was a direct response
+  to a design flaw I flagged myself mid-build: with public Higher/Lower
+  hints, a group can collectively binary-search a secret regardless of
+  range size, so rounds were resolving in well under 10 guesses no
+  matter the mode — best-of-N rounds + coarse hints fixed the core
+  pacing, chaos fixed the game having "zero personality" on top of that.
 
 ## Environment / ops
 
@@ -212,3 +229,17 @@ a group chat, not giving it sustained focus. Judge games on:
 - `WordClimbGame`'s word bank moved from a hand-typed 3–8 letter array
   to a real, offline-generated 3–12 letter dictionary (static JSON, no
   runtime dependency — see `wordBank.js`).
+- `/game set public|start|autojoin` typed bare (no on/off) now shows
+  current ON/OFF status instead of just a usage error — matches how
+  `/game roletags` already behaved.
+- `/game roletags` split from one shared bot-wide flag
+  (`settings.showRoleTags`, controlled only by the creator, governing
+  BOTH the (Creator) and (Admin) name tags together) into two fully
+  independent flags — `settings.creatorRoleTag` and
+  `settings.adminRoleTag`. The creator can only see/set their own
+  (Creator) tag; a registered admin can only see/set their own (Admin)
+  tag; neither can touch the other's. Migrated automatically in
+  `index.js` from any pre-existing `showRoleTags` value. Lives in
+  `permissions.js` (`nameTag()`) + `game-switch-commands.js`
+  (`roletags` command) — both bot-wide, game-agnostic files, so no
+  game folder needed to change for this.

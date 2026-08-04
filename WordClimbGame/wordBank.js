@@ -80,10 +80,19 @@ function randomLetterAt(length, excludeLetters = []) {
 
 function isValidWord(word, length, letter, usedWords = []) {
     const lw = (word || '').trim().toLowerCase()
-    if (lw.length !== length) return false
+    // `length` is the MINIMUM required length for this rung, not an
+    // exact match — a longer real word starting with the right letter
+    // still counts. (Previously this rejected e.g. "orange" for a
+    // 3-letter rung because 6 !== 3, even though "orange" is a valid
+    // word starting with "o" and well over the minimum.)
+    if (lw.length < length) return false
     if (lw[0] !== letter) return false
     if (usedWords.includes(lw)) return false
-    const byLen = CLEAN_DICTIONARY[length]
+    // Look the word up under ITS OWN actual length, since the
+    // dictionary is bucketed by exact word length per letter — a
+    // 6-letter word only exists in the length-6 bucket, never in the
+    // length-3 bucket, no matter what rung is being played.
+    const byLen = CLEAN_DICTIONARY[lw.length]
     if (!byLen || !byLen[letter]) return false
     return byLen[letter].includes(lw)
 }

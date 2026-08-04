@@ -57,11 +57,11 @@ into the group the command was typed in.
 | Command | Tier | What it does |
 |---|---|---|
 | `/game setgame [key]` | Creator | Switch the active game (cleanly stops the old one's live session first, if it supports that) |
-| `/game set public [on\|off]` | Creator or Admin | Toggle `publicVisible`, bot-wide — governs whichever game is active |
-| `/game set start [on\|off]` | Creator or Admin | Toggle `publicCanStart`, bot-wide |
-| `/game set autojoin [on\|off]` | Creator or Admin | Toggle creator/admin auto-join on lobby open, bot-wide |
+| `/game set public [on\|off]` | Creator or Admin | Toggle `publicVisible`, bot-wide — governs whichever game is active. Bare (no on/off) shows current status |
+| `/game set start [on\|off]` | Creator or Admin | Toggle `publicCanStart`, bot-wide. Bare shows current status |
+| `/game set autojoin [on\|off]` | Creator or Admin | Toggle creator/admin auto-join on lobby open, bot-wide. Bare shows current status |
 | `/game status` | Creator or Admin | Active game, admin's stations, all available game keys |
-| `/game roletags on\|off` | Creator | Toggle the (Creator)/(Admin) name tag, bot-wide |
+| `/game roletags [on\|off]` | Creator or Admin | Toggle **your own** name tag only — Creator controls `(Creator)`, Admin controls `(Admin)`; neither can see or set the other's. Bare shows your own current status |
 
 There used to be a `/game setadminaccess [gamekey|all]` here too — cut
 entirely. It was a second, differently-behaved path (direct replace)
@@ -216,6 +216,47 @@ game-specific surface area, not an abstraction gap.
 
 ---
 
+### Guess My Number (`!gmn` / `/gmn `)
+
+Free-for-all, not turn-based — anyone can guess any time. A match is
+best of `N` rounds (default 5), each round a fresh secret in a
+mode-dependent, lobby-size-scaled range. An autonomous **chaos**
+system (one admin dial: `/gmn chaos off|light|full`) can layer in
+bounty rounds, a sabotage tax, a hidden cursed number, end-of-match
+titles, and a rare whole-match Team Chaos split — the engine decides
+which event, on whom, and when, not the admin. See
+`GuessMyNumberGame/README.md` "Why a best-of-N match, coarse hints,
+and scaling range/cap/timer" and "Chaos system" for the design
+reasoning.
+
+**Public:**
+| Command | What it does |
+|---|---|
+| `!gmn` (bare) | Explainer card, never stateful |
+| `!gmn start` | Open a lobby |
+| `!gmn join` | Join the open lobby |
+| `!gmn board` | Live scoreboard — round progress, non-spoiling chaos state, closest guess, standings (or team scores under Team Chaos) |
+| `!gmn mode` | Shows current mode + rounds-per-match (read-only) |
+| `!gmn chaos` | Shows current chaos intensity (read-only) |
+| `!gmn leaderboard` / `lb` | This chat's all-time standings |
+| `!gmn help` | Same as bare |
+| bare number | No prefix — ANY joined player, no turn order |
+
+**Admin:**
+| Command | What it does |
+|---|---|
+| `/gmn help` | Dashboard (DM only) |
+| `/gmn status` | Lobby/round state, range, guess count, timer, current chaos event, standings/team scores |
+| `/gmn pause` / `/gmn resume` | Freeze / unfreeze the round timer |
+| `/gmn skip` | End the current round unsolved, reveal the number, move on |
+| `/gmn stop` / `end` | Terminate the session |
+| `/gmn reset` | Hard-wipe this chat's Guess My Number state |
+| `/gmn mode <classic\|speedrun\|megagrid>` | Difficulty mode for the *next* match |
+| `/gmn setrounds <1-15>` | Rounds per match for the *next* match |
+| `/gmn chaos <off\|light\|full>` | Chaos intensity for the *next* match — one dial, the engine autonomously picks the rest |
+
+---
+
 ### Roast Game (`!roast` / `/roast `)
 
 No lobby, no round, no live session — every request is a stateless
@@ -245,6 +286,61 @@ No word pool, no admin toggles for public visibility beyond the
 universal `publicVisible` setting — content is entirely hand-curated
 in `roastData.js`, restart to pick up changes. Name matching tolerates
 near-miss spelling — see RoastGame/README.md "How matching works".
+
+---
+
+### Word Chain (`!wch` / `/wch `)
+
+**Public:**
+| Command | What it does |
+|---|---|
+| `!wch` (bare) | Explainer card, never stateful |
+| `!wch start` | Open a lobby |
+| `!wch join` | Join the open lobby |
+| `!wch leaderboard` / `lb` | This chat's cross-match standings, ranked by score |
+| `!wch help` | Same as bare |
+| live word | No prefix — only the current turn's player is heard; the FIRST word of a match has no letter constraint, every word after must start with the previous word's last letter |
+| live steal attempt | No prefix — only usable by someone OTHER than whoever just missed, and only while a steal window is open (see below); a failed attempt is free, no penalty |
+
+**Admin:**
+| Command | What it does |
+|---|---|
+| `/wch help` | Dashboard (DM only) |
+| `/wch status` | Lobby/chain state, word count, current sector, live per-player score, turn timer |
+| `/wch begin` | Force-start early once `MIN_PLAYERS_TO_BEGIN` joined |
+| `/wch pause` / `/wch resume` | Freeze / unfreeze the turn timer (kernel-backed, same contract as Hangman/Word Climb) |
+| `/wch stop` / `end` | Terminate the session |
+| `/wch reset` | Hard-wipe this chat's Word Chain state, including its sector (back to the first entry in `SECTOR_SEQUENCE`) |
+| `/wch setturnseconds <5-60>` | Per-turn timer for the *next* match, replaces the auto shrink-as-the-chain-grows curve |
+
+There is **no manual category command**. The category ("sector") is
+fully automatic: every `SECTOR_LENGTH` valid words, the match
+announces a big shift and cycles to the next entry in
+`SECTOR_SEQUENCE` (`free → animals → fruits → countries → loops`),
+always starting a fresh match at the first entry regardless of where
+the previous match ended.
+
+Word Chain has no fixed length/letter axis the way Word Climb does —
+its difficulty curve runs on total words played this match instead
+(`DIFFICULTY_MAX_WORDS`), and the required starting letter is never
+picked by the bot at all; it's always just the previous word's last
+letter. A rejected word always names the specific reason (too short,
+wrong letter, repeat, not in this sector) instead of a generic
+"doesn't fit."
+
+Two mechanics unique to this game:
+- **Scoring** — every correct word earns a base point plus stacking
+  bonuses for a rare starting letter, a long word, answering fast, and
+  hitting a streak milestone. Score (not raw word count) is the
+  tie-break for who wins a multi-survivor finish, and what the
+  leaderboard tracks.
+- **Steal window** — a missed turn (wrong word or timeout) doesn't
+  just advance to the next player silently. The same required letter
+  stays open for `STEAL_WINDOW_SECONDS` for anyone else to grab out of
+  turn order for a rescue bonus, before normal rotation resumes.
+
+See `WordChainGame/README.md` for the full sector list and scoring
+table.
 
 ---
 

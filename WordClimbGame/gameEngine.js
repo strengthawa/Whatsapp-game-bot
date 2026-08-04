@@ -9,10 +9,12 @@
 //  How a match works:
 //   - Players take turns in a shuffled rotation. On your turn the
 //     bot gives you a starting LETTER and a required LENGTH.
-//   - You have a turn timer to reply with a real word of exactly
-//     that length, starting with that letter, not already used
-//     this match. Correct → your turn ends cleanly, your personal
-//     best length updates. Wrong / invalid / timeout → a strike.
+//   - You have a turn timer to reply with a real word of AT LEAST
+//     that length (longer is fine, shorter is not), starting with
+//     that letter, not already used this match. Correct → your turn
+//     ends cleanly, your personal best length updates. Wrong /
+//     invalid / timeout → a strike. The timer ticks down with a
+//     "Xs left" update every 5s (see armTurnTimer/tickTurnTimer).
 //   - The required length is the same for every player during one
 //     full lap of the rotation. Once everyone still standing has
 //     had a turn at the current length, the length climbs by +1
@@ -131,7 +133,7 @@ function addToLobby(gameState, number, name, jid) {
 
 function clearTimers(gameState) {
     if (gameState.lobbyTimer) clearInterval(gameState.lobbyTimer)
-    if (gameState.turnTimer) clearTimeout(gameState.turnTimer)
+    if (gameState.turnTimer) clearInterval(gameState.turnTimer)
     gameState.lobbyTimer = null
     gameState.turnTimer = null
 }
@@ -253,15 +255,55 @@ async function announceAndArm(chatId, ctx, turnResult) {
     await sock.sendMessage(chatId, {
         text:
             `🎲 ${tag}'s turn — next: ${nextTag}\n` +
-            `🆎 ${turnResult.length} letters, starts with "${turnResult.letter.toUpperCase()}"\n` +
+            `🆎 ${turnResult.length}+ letters, starts with "${turnResult.letter.toUpperCase()}"\n` +
             `⏳ ${seconds}s · 🏆 ${gameState.turnOrder.length} left · 📝 ${totalWords} words`,
         mentions: [jid, nextPlayer ? jidFor(gameState, nextPlayer) : jid]
     })
 
     kernel.markTurnStart(gameState)
-    if (gameState.turnTimer) clearTimeout(gameState.turnTimer)
+    if (gameState.turnTimer) clearInterval(gameState.turnTimer)
     persistGames()
-    gameState.turnTimer = setTimeout(() => handleTimeout(chatId, ctx), seconds * 1000)
+    armTurnTimer(chatId, ctx, seconds)
+}
+
+// Turn timer — ticks every 1s, posts a "X seconds left" update every
+// 5s (previously the turn just posted once and went silent until an
+// answer or a timeout — no mid-turn feedback at all), and calls
+// handleTimeout() at 0. Same interval-tick shape as the lobby
+// countdown above and HangmanGame's startTurnCountdown, so pause/
+// resume (which now uses clearInterval, not clearTimeout) stays
+// consistent with both.
+function armTurnTimer(chatId, ctx, seconds) {
+    const { games } = ctx
+    const gameState = getGameState(chatId, games)
+    gameState.turnSecondsLeft = seconds
+    gameState.turnTimer = setInterval(() => tickTurnTimer(chatId, ctx), 1000)
+}
+
+async function tickTurnTimer(chatId, ctx) {
+    const { sock, games } = ctx
+    const gameState = getGameState(chatId, games)
+
+    if (!gameState.active || gameState.paused) {
+        if (gameState.turnTimer) clearInterval(gameState.turnTimer)
+        return
+    }
+
+    gameState.turnSecondsLeft -= 1
+
+    if (gameState.turnSecondsLeft <= 0) {
+        clearInterval(gameState.turnTimer)
+        gameState.turnTimer = null
+        await handleTimeout(chatId, ctx)
+        return
+    }
+
+    if (gameState.turnSecondsLeft % 5 === 0) {
+        const tag = tagFor(gameState, gameState.currentPlayer, ctx.settings)
+        await sock.sendMessage(chatId, {
+            text: `⏳ ${gameState.turnSecondsLeft}s left for ${tag}...`
+        })
+    }
 }
 
 async function sendFinalBoard(chatId, ctx, endResult) {
@@ -344,7 +386,7 @@ async function submitGuess(chatId, ctx, senderNumber, rawWord) {
     if (!gameState.active || gameState.paused) return false
     if (senderNumber !== gameState.currentPlayer) return false
 
-    if (gameState.turnTimer) clearTimeout(gameState.turnTimer)
+    if (gameState.turnTimer) clearInterval(gameState.turnTimer)
 
     const length = gameState.currentLength
     const letter = gameState.currentLetter
@@ -534,10 +576,19 @@ async function startClimb(chatId, ctx) {
 // outright; resume re-arms a fresh full-length timer rather than
 // trying to recover an exact remaining count — simplest correct
 // behavior, and the resume message says so.
+// ─── Pause / resume (kernel-parity feature — see MEMORY.md rule 5:
+// game-agnostic admin needs that were only ever built once, inside
+// Hangman). WCL's turn timer is now a ticking setInterval (see
+// armTurnTimer/tickTurnTimer above — added so a turn shows "Xs left"
+// every 5s instead of going silent), matching Hangman's shape, so
+// pause clears it with clearInterval and resume re-arms a fresh
+// full-length ticking timer rather than trying to recover an exact
+// remaining count — simplest correct behavior, and the resume
+// message says so.
 function pauseSession(chatId, ctx) {
     const { games } = ctx
     const gameState = getGameState(chatId, games)
-    const paused = kernel.pauseTimer(gameState, gameState.turnTimer, clearTimeout)
+    const paused = kernel.pauseTimer(gameState, gameState.turnTimer, clearInterval)
     if (paused) kernel.markPauseStart(gameState)
     return paused
 }
@@ -548,7 +599,7 @@ function resumeSession(chatId, ctx) {
     kernel.markPauseEnd(gameState)
     const seconds = turnSecondsFor(gameState, settings)
     const resumed = kernel.resumeTimer(gameState, () => {
-        gameState.turnTimer = setTimeout(() => handleTimeout(chatId, ctx), seconds * 1000)
+        armTurnTimer(chatId, ctx, seconds)
     })
     if (resumed && typeof persistGames === 'function') persistGames()
     return resumed
@@ -583,5 +634,6 @@ module.exports = {
     submitGuess,
     pauseSession,
     resumeSession,
-    forceStopActiveSession
+    forceStopActiveSession,
+    tickTurnTimer
 }

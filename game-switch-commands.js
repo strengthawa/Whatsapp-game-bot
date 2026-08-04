@@ -10,7 +10,10 @@
 //    /game set public|start|autojoin [on|off] — bot-wide toggles, govern
 //                                    whichever game is active
 //    /game status                 — show what's active + what's available
-//    /game roletags on|off        — bot-wide (Creator)/(Admin) name tag toggle
+//    /game roletags [on|off]      — toggle YOUR OWN name tag only: the
+//                                    creator controls (Creator), a
+//                                    registered admin controls (Admin) —
+//                                    neither can see or set the other's
 //
 //  Station assignment ("which game(s) can the admin operate") is NOT
 //  handled here — that's identity, not configuration, and lives
@@ -55,10 +58,14 @@ async function handleGameSwitchCommands(ctx) {
         if (!senderIsAdmin) return false
 
         const key = cmd[1] === 'public' ? 'publicVisible' : cmd[1] === 'start' ? 'publicCanStart' : 'autoJoin'
+        const defaultValue = key === 'publicCanStart' ? false : true
         const mode = (cmd[2] || '').toLowerCase()
 
         if (mode !== 'on' && mode !== 'off') {
-            await sendSafeMessage(sock, replyTo, { text: `⚠️ Usage: \`/game set ${cmd[1]} [on/off]\`` })
+            const current = resolveSetting(key, settings, defaultValue)
+            await sendSafeMessage(sock, replyTo, {
+                text: `⚠️ Usage: \`/game set ${cmd[1]} [on/off]\`\nCurrently: *${current ? 'ON' : 'OFF'}*`
+            })
             return true
         }
 
@@ -174,33 +181,34 @@ async function handleGameSwitchCommands(ctx) {
         return true
     }
 
-    // ── roletags on|off — bot-wide (Creator)/(Admin) name tag toggle ──
-    // Creator-only. Read by permissions.nameTag() so it applies
-    // identically across every game — one flag, one place, no per-game
-    // duplication or drift.
+    // ── roletags [on|off] — YOUR OWN name tag only ──────────────────
+    // Two fully independent flags, read by permissions.nameTag():
+    // settings.creatorRoleTag (the (Creator) badge) and
+    // settings.adminRoleTag (the (Admin) badge). Each tier can only
+    // ever see or set its OWN flag here — the creator has no way to
+    // touch the admin's tag, and a registered admin has no way to
+    // touch the creator's. This is deliberate: unlike public/start/
+    // autojoin (one bot-wide behavior, creator-overrides-admin), these
+    // two tags are two DIFFERENT people's own display preference.
     if (cmd[0] === 'roletags') {
-        if (!senderIsCreator) {
-            if (senderIsAdmin) {
-                await sendSafeMessage(sock, replyTo, {
-                    text: `🔒 \`/game roletags\` is creator-only.`
-                })
-                return true
-            }
-            return false
-        }
+        if (!senderIsCreator && !senderIsAdmin) return false
 
         const arg = (cmd[1] || '').toLowerCase()
+        const key   = senderIsCreator ? 'creatorRoleTag' : 'adminRoleTag'
+        const label = senderIsCreator ? '(Creator)' : '(Admin)'
+        const current = settings[key] !== false
+
         if (arg !== 'on' && arg !== 'off') {
             await sendSafeMessage(sock, replyTo, {
-                text: `Usage: \`/game roletags on\` or \`/game roletags off\`\nCurrently: *${settings.showRoleTags === false ? 'OFF' : 'ON'}*`
+                text: `Usage: \`/game roletags on\` or \`/game roletags off\`\nYour *${label}* tag is currently: *${current ? 'ON' : 'OFF'}*`
             })
             return true
         }
 
-        settings.showRoleTags = (arg === 'on')
+        settings[key] = (arg === 'on')
         saveSettings()
         await sendSafeMessage(sock, replyTo, {
-            text: `✅ Role tags (Creator)/(Admin) are now *${arg === 'on' ? 'ON' : 'OFF'}* — applies bot-wide, across every game.`
+            text: `✅ Your *${label}* name tag is now *${arg === 'on' ? 'ON' : 'OFF'}* — this only affects you, across every game.`
         })
         return true
     }

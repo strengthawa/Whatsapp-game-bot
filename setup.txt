@@ -1,0 +1,127 @@
+SETUP.TXT — Adding a new game to this bot (read this before writing any code)
+================================================================================
+Audience: an AI (or dev) tasked with adding a NEW game to this repo without
+breaking anything that already exists.
+
+--------------------------------------------------------------------------------
+0. READ THESE TWO FILES FIRST, IN THIS ORDER — do not skip, do not paraphrase
+   from memory of "similar bots":
+--------------------------------------------------------------------------------
+   1. ARCHITECTURE.md        — the actual contract + the WHY behind every rule.
+                                Has a real "lessons learned" section of bugs
+                                that happened before this contract existed.
+   2. NEW_GAME_HANDOFF.md    — the step-by-step checklist: required files,
+                                config.js shape, kernel functions to use,
+                                pause/resume, state-key namespacing, tests.js
+                                requirements.
+
+   Everything below is the part those two files do NOT cover: what happens
+   OUTSIDE your game folder.
+
+--------------------------------------------------------------------------------
+1. WHAT IS FULLY AUTOMATIC — you must NOT touch these, ever
+--------------------------------------------------------------------------------
+   - index.js
+   - games-registry.js
+   - scripts/run-tests.js
+   - scripts/verify-games.js
+
+   games-registry.js scans every top-level folder in the project root at
+   boot. Any folder containing a valid config.js + gameEngine.js +
+   adminCommands.js is auto-loaded under its own GAME_KEY. A broken game
+   folder is logged and skipped — it can never take the rest of the bot
+   down. scripts/run-tests.js auto-discovers your tests.js the same way.
+   If you find yourself editing any of the 4 files above to "register"
+   your game, STOP — that means something in your folder doesn't match
+   the contract in NEW_GAME_HANDOFF.md §2-3.
+
+--------------------------------------------------------------------------------
+2. WHAT IS NOT AUTOMATIC — you MUST manually update these root docs
+--------------------------------------------------------------------------------
+   This is the step every past game addition in this repo's history has
+   gotten wrong at least once (see MEMORY.md — Roast Game was live in code
+   for a while before it was added to this same list; the "showRoleTags"
+   / "three games" vs "four games" drift across README.md and
+   COMMAND_REFERENCE.md is the same class of bug). Update ALL of these
+   before you consider the task done:
+
+   [ ] README.md
+       - §"Currently runs N games" sentence near the top — bump the count.
+       - The games table (Game | Key | Public prefix | Admin prefix) —
+         add one row.
+       - Add a short "### YourGame (ACRONYM)" blurb in the games section,
+         matching the style of the existing entries (2-4 bullet points,
+         link to YourGame/README.md).
+       - Any other spot that says "N games" or lists all games by name.
+
+   [ ] COMMAND_REFERENCE.md
+       - §3 "Game-specific commands" — add a "### YourGame (`!prefix` /
+         `/prefix `)" section with full Public and Admin command tables,
+         in the same two-table format as every other game's section.
+         Put it after the last existing game section, before "## 4. File
+         structure".
+       - If §3's intro or any other line states a game count, bump it.
+
+   [ ] YourGameName/README.md (inside your own folder — required by
+       NEW_GAME_HANDOFF.md §2, called out again here because it's easy to
+       treat as optional): full rules + command list for your game alone.
+
+   [ ] MEMORY.md (recommended, not strictly required to ship, but do it):
+       add one bullet under the games list describing what the game is,
+       any non-obvious design decision, and any bug you hit + fixed while
+       building it. This file is the project's dev-log / institutional
+       memory — every existing game has an entry there. Future sessions
+       (human or AI) rely on it to avoid re-litigating settled decisions.
+
+   Nothing else in the root needs to change. ARCHITECTURE.md,
+   NEW_GAME_HANDOFF.md, and WORDCLIMB_MESSAGE_REDESIGN.md are already
+   game-agnostic references — any game names that appear inside them
+   (e.g. WordLadderGame, MomentumGame, TargetNumbersGame) are illustrative
+   past-lesson examples, not a live registry list, and do not need editing.
+
+--------------------------------------------------------------------------------
+3. HARD RULES (violating these WILL break other games or fail verification)
+--------------------------------------------------------------------------------
+   - GAME_KEY must be lowercase and globally unique. If it collides with
+     an existing game's key, games-registry.js keeps whichever loaded
+     first and silently ignores your folder (logged as a warning, not a
+     crash) — check `npm run verify` output, it will tell you.
+   - PREFIX (public, e.g. "!ygn") and ADMIN_PREFIX (admin, e.g. "/ygn ",
+     note the trailing space) must not collide with any existing game's
+     prefixes.
+   - All persistent state must be namespaced under `${GAME_KEY}:${chatId}`
+     (or written through the shared kernel helpers, which do this for
+     you). Never write to a bare/generic key like 'difficulty' or
+     'timerSeconds' — that WILL alias with another game's setting of the
+     same name. This exact bug is documented in ARCHITECTURE.md's lessons
+     section — do not repeat it.
+   - Never require() another game's folder directly. If you need shared
+     logic, it belongs in a root-level shared file (gameKernel.js,
+     permissions.js), not borrowed from a sibling game.
+   - Every game folder is independent for testing: your tests.js must not
+     depend on any other game's state or run order. scripts/run-tests.js
+     runs each game's suite in isolation.
+
+--------------------------------------------------------------------------------
+4. DEFINITION OF DONE — run this before saying you're finished
+--------------------------------------------------------------------------------
+   1. `npm install` (only if you added a new external dependency — declare
+      it in package.json's "dependencies", never assume it's already
+      there).
+   2. `npm run verify`
+      Must print "✅ All checks passed. Safe to deploy." — this checks:
+      package.json declares every dependency in use, every game
+      (including yours) satisfies the plugin contract, state isolation
+      between games, no sendSafeMessage misuse, and that your bare
+      acronym command never silently starts a session.
+   3. `npm test`
+      Must show your game's suite passing at N/N, AND every other
+      existing game's suite still passing at their same counts. If any
+      OTHER game's test count or pass rate changed, you touched something
+      you shouldn't have — find it and revert.
+   4. Confirm every checkbox in section 2 above is actually done — grep
+      the repo for the old game count (e.g. if you're adding game #6,
+      grep for "five games") to make sure nothing was missed.
+
+If steps 2 and 3 both pass and section 2's docs are updated, the game is
+correctly plugged in and nothing else was broken.

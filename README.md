@@ -2,8 +2,9 @@
 
 A WhatsApp game bot (built on Baileys) with a pluggable structure — the
 creator can add and switch between games without touching the core bot.
-Currently runs **three games**: **Hangman** (`hangman`), **Word Climb**
-(`wordclimb`), and **Roast Game** (`roast`).
+Currently runs **five games**: **Hangman** (`hangman`), **Word Climb**
+(`wordclimb`), **Roast Game** (`roast`), **Guess My Number**
+(`guessmynumber`), and **Word Chain** (`wordchain`).
 
 **→ Building a new game? Read [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 first.** That's the canonical plugin contract — this file is the tour.
@@ -86,7 +87,8 @@ See §7 below; the bot cannot identify its own creator without it.
   "adminJid": "",
   "activeGame": "hangman",        // which game folder is currently live
   "adminGameAccess": "all",       // "all" or a specific GAME_KEY
-  "showRoleTags": true,           // bot-wide (Creator)/(Admin) name tag
+  "creatorRoleTag": true,         // (Creator) name tag — creator's own, sets via "/game roletags"
+  "adminRoleTag": true,           // (Admin) name tag — admin's own, independent of the creator's
   "publicVisible": true,
   "publicCanStart": false
   // + any game-specific keys, namespaced by that game's GAME_KEY,
@@ -130,7 +132,7 @@ any individual game's folder:
   both at a glance. Station assignment does **not** live here —
   that's `/admin`'s job, exclusively.
 
-Full command tables for all three games: [`COMMAND_REFERENCE.md`](./COMMAND_REFERENCE.md) §1.
+Full command tables for all five games: [`COMMAND_REFERENCE.md`](./COMMAND_REFERENCE.md) §1.
 
 ---
 
@@ -141,6 +143,8 @@ Full command tables for all three games: [`COMMAND_REFERENCE.md`](./COMMAND_REFE
 | Hangman | `hangman` | `!hmg` | `/hmg ` |
 | Word Climb | `wordclimb` | `!wcl` | `/wcl ` |
 | Roast Game | `roast` | `!roast` | `/roast ` |
+| Guess My Number | `guessmynumber` | `!gmn` | `/gmn ` |
+| Word Chain | `wordchain` | `!wch` | `/wch ` |
 
 ### Hangman (HMG)
 Classic single-word elimination, adapted for a live group chat.
@@ -164,6 +168,26 @@ history — no live AI call, no rebuild command, no lobby or round.
 - Content lives in `RoastGame/roastData.js` and is edited offline.
 - Full rules, command list, and exclusion policy:
   [`RoastGame/README.md`](./RoastGame/README.md).
+
+### Guess My Number (GMN)
+Free-for-all number-guessing match — no turn order, anyone can guess
+any time. Best of `N` rounds, Higher/Lower + coarse Hot/Cold proximity
+tiers, range/guess-cap/timer all scale together with lobby size.
+- 3 difficulty modes (Classic, Speed Run, Mega Grid) plus an
+  autonomous **chaos** system (`/gmn chaos off|light|full`) — one
+  admin dial; the engine itself decides which chaos event fires, on
+  whom, and when (bounty rounds, a sabotage tax, a hidden cursed
+  number, end-of-match titles, a rare whole-match Team Chaos split).
+- Full rules + command list: [`GuessMyNumberGame/README.md`](./GuessMyNumberGame/README.md).
+
+### Word Chain (WCH)
+Live elimination word game — each word must start with the last letter
+of the word before it, turn timer shrinks as the chain grows.
+- Automatic category "sectors" cycle the whole match on their own
+  (free/animals/fruits/countries), stacking scoring bonuses (rare
+  letter, long word, speed, streak), and a steal window after any
+  missed turn for another player to grab a rescue bonus.
+- Full rules + command list: [`WordChainGame/README.md`](./WordChainGame/README.md).
 
 ---
 
