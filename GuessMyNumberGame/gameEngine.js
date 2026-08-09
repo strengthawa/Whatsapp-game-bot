@@ -379,10 +379,8 @@ async function startRound(chatId, ctx) {
 
     await sock.sendMessage(chatId, {
         text:
-            `${config.GRID_EMOJI} *Round ${gameState.roundNumber}/${gameState.roundsPerMatch}* — guess between ` +
-            `*${gameState.effectiveMin}–${gameState.effectiveMax}*!\n` +
-            `${config.HIGHER_EMOJI}${config.LOWER_EMOJI} Higher/Lower + heat hints on every guess. No turn order — anyone can guess any time.\n` +
-            `⏳ ${gameState.roundSeconds}s · 🎯 ${gameState.guessCap} guesses max for the round` +
+            `${config.GRID_EMOJI} *Round ${gameState.roundNumber}/${gameState.roundsPerMatch}* — guess *${gameState.effectiveMin}–${gameState.effectiveMax}*!\n` +
+            `⏳ ${gameState.roundSeconds}s · 🎯 ${gameState.guessCap} guesses` +
             chaosLine
     })
 
@@ -416,7 +414,7 @@ async function tickRoundTimer(chatId, ctx) {
 
     if (gameState.roundSecondsLeft % 15 === 0) {
         await sock.sendMessage(chatId, {
-            text: `⏳ ${gameState.roundSecondsLeft}s left · 🔢 ${gameState.guessCount}/${gameState.guessCap} guesses used`
+            text: `⏳ ${gameState.roundSecondsLeft}s · 🔢 ${gameState.guessCount}/${gameState.guessCap}`
         })
     }
 }
@@ -541,7 +539,7 @@ async function submitGuess(chatId, ctx, senderNumber, rawText) {
 
     persistGames()
     await sock.sendMessage(chatId, {
-        text: `${hintText} — ${tag} · ${gameState.guessCount}/${gameState.guessCap} guesses used${chaosNote}${taunt}`
+        text: `${hintText} — ${tag} (${gameState.guessCount}/${gameState.guessCap})${chaosNote}${taunt}`
     })
     return true
 }
@@ -609,11 +607,14 @@ async function openFreshLobby(chatId, ctx) {
     gameState.lobbyActive = true
     gameState.lobbySecondsLeft = config.LOBBY_SECONDS
 
-    // Auto-join — same bot-wide "autoJoin" setting every other game reads.
+    // Auto-join is OPT-IN now (config.AUTO_JOIN_DEFAULT) — it used to
+    // default to "on" and silently seat Creator/Admin as phantom players
+    // in every lobby, which threw off player-count-based scaling (range/
+    // guess cap/timer) and the lobby display even in real solo sessions.
     const creatorEnvJid   = process.env.CREATOR_JID || ''
     const creatorNum      = creatorEnvJid ? creatorEnvJid.split('@')[0].split(':')[0] : ''
-    const creatorAutoJoin = settings.creatorOverrides?.autoJoin !== false
-    const adminAutoJoin   = settings.autoJoin !== false
+    const creatorAutoJoin = settings.creatorOverrides?.autoJoin === true || (config.AUTO_JOIN_DEFAULT && settings.creatorOverrides?.autoJoin !== false)
+    const adminAutoJoin   = settings.autoJoin === true || (config.AUTO_JOIN_DEFAULT && settings.autoJoin !== false)
 
     if (creatorNum && creatorAutoJoin) {
         gameState.players.push(creatorNum)
@@ -663,7 +664,7 @@ function startLobbyCountdown(chatId, ctx) {
             await closeLobbyAndStart(chatId, ctx)
         } else if (gameState.lobbySecondsLeft % 10 === 0) {
             await sock.sendMessage(chatId, {
-                text: `⏳ ${gameState.lobbySecondsLeft}s left to join — 👥 ${gameState.players.length} joined`
+                text: `⏳ ${gameState.lobbySecondsLeft}s · 👥 ${gameState.players.length} joined`
             })
         }
         persistGames()

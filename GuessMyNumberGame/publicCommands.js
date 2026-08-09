@@ -138,10 +138,8 @@ async function handlePublicMessage(msgCtx) {
             .join('\n')
         await sock.sendMessage(from, {
             text:
-                `✅ *${nameTag(senderNumber, nameCache, settings)} joined!* ${config.GRID_EMOJI}\n\n` +
-                `👥 *Lobby:*\n${lobbyText}\n\n` +
-                `_Type *${config.PREFIX} join* to hop in!_\n` +
-                `_Type *${config.PREFIX} help* for commands._`,
+                `✅ *${nameTag(senderNumber, nameCache, settings)} joined!* ${config.GRID_EMOJI}\n` +
+                `👥 *Lobby:*\n${lobbyText}`,
             mentions: lobbyMentions
         })
         persistGames()

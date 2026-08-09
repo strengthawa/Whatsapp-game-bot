@@ -28,21 +28,21 @@ module.exports = {
             MIN:           1,
             MAX:           100,
             ROUND_SECONDS: 60,
-            GUESS_CAP:     12
+            GUESS_CAP:     8
         },
         speedrun: {
             LABEL:         'Speed Run',
             MIN:           1,
             MAX:           50,
             ROUND_SECONDS: 30,
-            GUESS_CAP:     8
+            GUESS_CAP:     6
         },
         megagrid: {
             LABEL:         'Mega Grid',
             MIN:           1,
             MAX:           1000,
             ROUND_SECONDS: 90,
-            GUESS_CAP:     18
+            GUESS_CAP:     12
         }
     },
     DEFAULT_MODE: 'classic',
@@ -63,11 +63,18 @@ module.exports = {
     // see gameEngine.js header for why a single round alone tends to
     // resolve fast regardless of range size. Cumulative round wins
     // decide the match; a fresh secret is picked every round.
-    ROUNDS_PER_MATCH: 5,
+    ROUNDS_PER_MATCH: 3,
 
     // ── Lobby ────────────────────────────────────────────────
     LOBBY_SECONDS:        30,
     MIN_PLAYERS_TO_BEGIN: 1,
+
+    // Auto-join used to silently pad every lobby with the Creator/Admin
+    // accounts, which inflated player counts (and therefore range/cap/
+    // timer scaling) even in genuine solo sessions. OFF by default now —
+    // an admin who actually wants Creator/Admin auto-seated can opt in
+    // per-chat via settings.autoJoin / settings.creatorOverrides.autoJoin.
+    AUTO_JOIN_DEFAULT: false,
 
     // ── Hint tiers ───────────────────────────────────────────
     // Higher/Lower direction is always exact. Proximity is DELIBERATELY
@@ -98,7 +105,7 @@ module.exports = {
     // matches play out the same way even at the same intensity. See
     // gameEngine.js header for the full design reasoning.
     CHAOS_INTENSITIES: ['off', 'light', 'full'],
-    DEFAULT_CHAOS: 'light',
+    DEFAULT_CHAOS: 'off',
 
     // "light" = flavor only (taunts, lockout, titles) — no mechanical
     // risk/reward, safe default that never changes who wins.
